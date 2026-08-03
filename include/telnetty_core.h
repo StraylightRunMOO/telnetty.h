@@ -314,6 +314,7 @@ struct telnetty_option {
     telnetty_option_handler_t handler;  /**< Option command handler */
     telnetty_sb_handler_t sb_handler;   /**< Subnegotiation handler */
     void* user_data;                    /**< User data for handlers */
+    void (*user_data_free)(void*);      /**< Optional freer for user_data */
     struct telnetty_option* next;       /**< Next option in list */
 };
 
@@ -764,8 +765,27 @@ static TELNETTY_UNUSED void telnetty_option_destroy(telnetty_option_t* opt) {
     if (opt->sb_data) {
         telnetty_buffer_destroy(opt->sb_data);
     }
+    if (opt->user_data && opt->user_data_free) {
+        opt->user_data_free(opt->user_data);
+        opt->user_data = NULL;
+    }
     
     TELNETTY_FREE(opt);
+}
+
+/** Attach owned user_data with a freer invoked from option/context destroy. */
+static TELNETTY_UNUSED void telnetty_option_set_user_data(
+    telnetty_context_t* ctx,
+    uint8_t option,
+    void* user_data,
+    void (*freer)(void*)
+) {
+    telnetty_option_t* opt = telnetty_ensure_option(ctx, option);
+    if (!opt) return;
+    if (opt->user_data && opt->user_data_free)
+        opt->user_data_free(opt->user_data);
+    opt->user_data = user_data;
+    opt->user_data_free = freer;
 }
 
 /* ============================================================================

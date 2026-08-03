@@ -953,6 +953,18 @@ static void telnetty_charset_sb_handler(
     }
 }
 
+static void telnetty_charset_data_free(void* p) {
+    telnetty_charset_data_t* cd = (telnetty_charset_data_t*)p;
+    if (!cd) return;
+    if (cd->supported_charsets) {
+        for (size_t i = 0; i < cd->charset_count; i++)
+            TELNETTY_OPTIONS_FREE(cd->supported_charsets[i]);
+        TELNETTY_OPTIONS_FREE(cd->supported_charsets);
+    }
+    TELNETTY_OPTIONS_FREE(cd->selected_charset);
+    TELNETTY_OPTIONS_FREE(cd);
+}
+
 static int telnetty_enable_charset(
     telnetty_context_t* ctx,
     const char* const* charsets,
@@ -987,6 +999,8 @@ static int telnetty_enable_charset(
                              telnetty_charset_handler, cd);
     telnetty_register_sb_handler(ctx, TELNETTY_TELOPT_CHARSET,
                                  telnetty_charset_sb_handler, cd);
+    telnetty_option_set_user_data(ctx, TELNETTY_TELOPT_CHARSET, cd,
+                                  telnetty_charset_data_free);
 
     /* Server offers WILL only (not DO) — one direction avoids dual REQUEST. */
     return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_CHARSET);
