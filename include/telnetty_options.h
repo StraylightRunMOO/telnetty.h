@@ -394,12 +394,22 @@ static const char* telnetty_get_environ(
  * Charset Option (RFC 2066)
  * ============================================================================ */
 
+/* RFC 2066 CHARSET subnegotiation codes */
+#define TELNETTY_CHARSET_REQUEST   1
+#define TELNETTY_CHARSET_ACCEPTED  2
+#define TELNETTY_CHARSET_REJECTED  3
+#define TELNETTY_CHARSET_TTABLE_IS 4
+#define TELNETTY_CHARSET_TTABLE_REJECTED 5
+#define TELNETTY_CHARSET_TTABLE_ACK 6
+#define TELNETTY_CHARSET_TTABLE_NAK 7
+
 /* Charset data structure */
 typedef struct {
-    char** supported_charsets;          /**< Supported character sets */
+    char** supported_charsets;          /**< Supported character sets (owned) */
     size_t charset_count;               /**< Number of supported charsets */
-    char* selected_charset;             /**< Selected character set */
+    char* selected_charset;             /**< Selected character set (owned) */
     bool negotiation_complete;          /**< Negotiation is complete */
+    bool request_sent;                  /**< SB REQUEST already sent once */
 } telnetty_charset_data_t;
 
 /**
@@ -551,49 +561,14 @@ static void telnetty_binary_handler(
     uint8_t command,
     void* user_data
 ) {
-    if (!ctx || option != TELNETTY_TELOPT_BINARY) return;
-    
-    telnetty_option_tracker_t* tracker = (telnetty_option_tracker_t*)user_data;
-    if (!tracker) return;
-    
-    switch (command) {
-        case TELNETTY_WILL:
-            /* Peer wants to enable binary transmission */
-            telnetty_send_option(ctx, TELNETTY_DO, option);
-            tracker->remote_state = TELNETTY_OPTION_STATE_ENABLED;
-            break;
-            
-        case TELNETTY_WONT:
-            /* Peer wants to disable binary transmission */
-            telnetty_send_option(ctx, TELNETTY_DONT, option);
-            tracker->remote_state = TELNETTY_OPTION_STATE_DISABLED;
-            break;
-            
-        case TELNETTY_DO:
-            /* Peer agrees to enable binary transmission */
-            tracker->local_state = TELNETTY_OPTION_STATE_ENABLED;
-            break;
-            
-        case TELNETTY_DONT:
-            /* Peer refuses to enable binary transmission */
-            tracker->local_state = TELNETTY_OPTION_STATE_DISABLED;
-            break;
-    }
+    /* Q-method in core owns IAC replies. */
+    (void)ctx; (void)option; (void)command; (void)user_data;
 }
 
 static TELNETTY_UNUSED int telnetty_enable_binary(telnetty_context_t* ctx) {
     if (!ctx) return -1;
-    
-    /* Register option handler */
-    telnetty_option_tracker_t* tracker = telnetty_option_tracker_create(
-        TELNETTY_TELOPT_BINARY,
-        telnetty_binary_handler,
-        NULL
-    );
-    
-    if (!tracker) return -1;
-    
-    /* Send WILL to enable binary transmission */
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_BINARY, 1, 1);
+    telnetty_register_option(ctx, TELNETTY_TELOPT_BINARY, telnetty_binary_handler, NULL);
     return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_BINARY);
 }
 
@@ -614,49 +589,13 @@ static void telnetty_echo_handler(
     uint8_t command,
     void* user_data
 ) {
-    if (!ctx || option != TELNETTY_TELOPT_ECHO) return;
-    
-    telnetty_option_tracker_t* tracker = (telnetty_option_tracker_t*)user_data;
-    if (!tracker) return;
-    
-    switch (command) {
-        case TELNETTY_WILL:
-            /* Peer wants to enable echo */
-            telnetty_send_option(ctx, TELNETTY_DO, option);
-            tracker->remote_state = TELNETTY_OPTION_STATE_ENABLED;
-            break;
-            
-        case TELNETTY_WONT:
-            /* Peer wants to disable echo */
-            telnetty_send_option(ctx, TELNETTY_DONT, option);
-            tracker->remote_state = TELNETTY_OPTION_STATE_DISABLED;
-            break;
-            
-        case TELNETTY_DO:
-            /* Peer agrees to enable echo */
-            tracker->local_state = TELNETTY_OPTION_STATE_ENABLED;
-            break;
-            
-        case TELNETTY_DONT:
-            /* Peer refuses to enable echo */
-            tracker->local_state = TELNETTY_OPTION_STATE_DISABLED;
-            break;
-    }
+    (void)ctx; (void)option; (void)command; (void)user_data;
 }
 
 static TELNETTY_UNUSED int telnetty_enable_echo(telnetty_context_t* ctx) {
     if (!ctx) return -1;
-    
-    /* Register option handler */
-    telnetty_option_tracker_t* tracker = telnetty_option_tracker_create(
-        TELNETTY_TELOPT_ECHO,
-        telnetty_echo_handler,
-        NULL
-    );
-    
-    if (!tracker) return -1;
-    
-    /* Send WILL to enable echo */
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_ECHO, 1, 0);
+    telnetty_register_option(ctx, TELNETTY_TELOPT_ECHO, telnetty_echo_handler, NULL);
     return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_ECHO);
 }
 
@@ -684,50 +623,19 @@ static void telnetty_sga_handler(
     uint8_t command,
     void* user_data
 ) {
-    if (!ctx || option != TELNETTY_TELOPT_SGA) return;
-    
-    telnetty_option_tracker_t* tracker = (telnetty_option_tracker_t*)user_data;
-    if (!tracker) return;
-    
-    switch (command) {
-        case TELNETTY_WILL:
-            /* Peer wants to enable suppress go ahead */
-            telnetty_send_option(ctx, TELNETTY_DO, option);
-            tracker->remote_state = TELNETTY_OPTION_STATE_ENABLED;
-            break;
-            
-        case TELNETTY_WONT:
-            /* Peer wants to disable suppress go ahead */
-            telnetty_send_option(ctx, TELNETTY_DONT, option);
-            tracker->remote_state = TELNETTY_OPTION_STATE_DISABLED;
-            break;
-            
-        case TELNETTY_DO:
-            /* Peer agrees to enable suppress go ahead */
-            tracker->local_state = TELNETTY_OPTION_STATE_ENABLED;
-            break;
-            
-        case TELNETTY_DONT:
-            /* Peer refuses to enable suppress go ahead */
-            tracker->local_state = TELNETTY_OPTION_STATE_DISABLED;
-            break;
-    }
+    /* Q-method in core already emitted any IAC reply. Handler is a no-op
+     * hook for applications that stack on top of SGA. */
+    (void)ctx; (void)option; (void)command; (void)user_data;
 }
 
 static TELNETTY_UNUSED int telnetty_enable_sga(telnetty_context_t* ctx) {
     if (!ctx) return -1;
-    
-    /* Register option handler */
-    telnetty_option_tracker_t* tracker = telnetty_option_tracker_create(
-        TELNETTY_TELOPT_SGA,
-        telnetty_sga_handler,
-        NULL
-    );
-    
-    if (!tracker) return -1;
-    
-    /* Send WILL to enable suppress go ahead */
-    return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_SGA);
+    /* Bidirectional SGA is universal for MUD servers. */
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_SGA, 1, 1);
+    telnetty_register_option(ctx, TELNETTY_TELOPT_SGA, telnetty_sga_handler, NULL);
+    telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_SGA);
+    telnetty_send_option(ctx, TELNETTY_DO,   TELNETTY_TELOPT_SGA);
+    return 0;
 }
 
 static TELNETTY_UNUSED int telnetty_disable_sga(telnetty_context_t* ctx) {
@@ -741,67 +649,37 @@ static TELNETTY_UNUSED int telnetty_disable_sga(telnetty_context_t* ctx) {
  * Terminal Type Implementation
  * ============================================================================ */
 
+static TELNETTY_UNUSED int telnetty_query_terminal_type(telnetty_context_t* ctx);
+
 static void telnetty_ttype_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
     void* user_data
 ) {
-    if (!ctx || option != TELNETTY_TELOPT_TTYPE) return;
-    
-    telnetty_terminal_type_data_t* ttype_data = (telnetty_terminal_type_data_t*)user_data;
-    if (!ttype_data) return;
-    
-    switch (command) {
-        case TELNETTY_WILL:
-            /* Peer wants to enable terminal type */
-            telnetty_send_option(ctx, TELNETTY_DO, option);
-            break;
-            
-        case TELNETTY_WONT:
-            /* Peer wants to disable terminal type */
-            telnetty_send_option(ctx, TELNETTY_DONT, option);
-            break;
-            
-        case TELNETTY_DO:
-            /* Peer agrees to enable terminal type */
-            /* Send request for terminal type */
-            telnetty_query_terminal_type(ctx);
-            break;
-            
-        case TELNETTY_DONT:
-            /* Peer refuses to enable terminal type */
-            break;
-    }
+    (void)option;
+    (void)user_data;
+    if (!ctx) return;
+    /* After peer WILL settles (him=YES), request the type once via SEND. */
+    if (command == TELNETTY_WILL)
+        telnetty_query_terminal_type(ctx);
 }
 
 static TELNETTY_UNUSED int telnetty_enable_ttype(telnetty_context_t* ctx, size_t max_type_length) {
     if (!ctx) return -1;
     
-    /* Allocate terminal type data */
     telnetty_terminal_type_data_t* ttype_data = (telnetty_terminal_type_data_t*)TELNETTY_OPTIONS_MALLOC(
         sizeof(telnetty_terminal_type_data_t)
     );
-    
     if (!ttype_data) return -1;
     
     memset(ttype_data, 0, sizeof(telnetty_terminal_type_data_t));
     ttype_data->max_length = max_type_length > 0 ? max_type_length : 64;
-    
-    /* Register option handler */
-    telnetty_option_tracker_t* tracker = telnetty_option_tracker_create(
-        TELNETTY_TELOPT_TTYPE,
-        telnetty_ttype_handler,
-        ttype_data
-    );
-    
-    if (!tracker) {
-        TELNETTY_OPTIONS_FREE(ttype_data);
-        return -1;
-    }
-    
-    /* Send WILL to enable terminal type */
-    return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_TTYPE);
+
+    /* Server typically DO TTYPE (ask client), not WILL. */
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_TTYPE, 0, 1);
+    telnetty_register_option(ctx, TELNETTY_TELOPT_TTYPE, telnetty_ttype_handler, ttype_data);
+    return telnetty_send_option(ctx, TELNETTY_DO, TELNETTY_TELOPT_TTYPE);
 }
 
 static TELNETTY_UNUSED int telnetty_query_terminal_type(telnetty_context_t* ctx) {
@@ -840,18 +718,10 @@ static void telnetty_naws_handler(
 
 static TELNETTY_UNUSED int telnetty_enable_naws(telnetty_context_t* ctx) {
     if (!ctx) return -1;
-    
-    /* Register option handler */
-    telnetty_option_tracker_t* tracker = telnetty_option_tracker_create(
-        TELNETTY_TELOPT_NAWS,
-        telnetty_naws_handler,
-        NULL
-    );
-    
-    if (!tracker) return -1;
-    
-    /* Send WILL to enable NAWS */
-    return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_NAWS);
+    /* Server asks client for window size (DO), does not WILL NAWS. */
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_NAWS, 0, 1);
+    telnetty_register_option(ctx, TELNETTY_TELOPT_NAWS, telnetty_naws_handler, NULL);
+    return telnetty_send_option(ctx, TELNETTY_DO, TELNETTY_TELOPT_NAWS);
 }
 
 static int telnetty_get_window_size(
@@ -978,8 +848,45 @@ static const char* telnetty_get_environ(
 }
 
 /* ============================================================================
- * Charset Implementation
+ * Charset Implementation (RFC 2066)
+ *
+ * After WILL/DO settles to enabled, we send at most one SB REQUEST for
+ * UTF-8 (or the first supported charset). Re-REQUEST is suppressed so
+ * clients like Atlantis do not spam "Negotiated string encoding".
  * ============================================================================ */
+
+/* Forward: SB handler */
+static void telnetty_charset_sb_handler(
+    telnetty_context_t* ctx,
+    uint8_t option,
+    const uint8_t* data,
+    size_t length,
+    void* user_data
+);
+
+/* Emit IAC SB CHARSET REQUEST ;UTF-8 IAC SE once. */
+static TELNETTY_UNUSED void telnetty_charset_send_request(
+    telnetty_context_t* ctx,
+    telnetty_charset_data_t* cd
+) {
+    if (!ctx || !cd || cd->request_sent || cd->negotiation_complete)
+        return;
+
+    const char* name = "UTF-8";
+    if (cd->charset_count > 0 && cd->supported_charsets && cd->supported_charsets[0])
+        name = cd->supported_charsets[0];
+
+    /* REQUEST + sep(';') + name */
+    size_t nlen = strlen(name);
+    uint8_t buf[64];
+    if (nlen + 2 > sizeof(buf)) return;
+    buf[0] = TELNETTY_CHARSET_REQUEST;
+    buf[1] = ';';
+    memcpy(buf + 2, name, nlen);
+
+    if (telnetty_send_subnegotiation(ctx, TELNETTY_TELOPT_CHARSET, buf, nlen + 2) == 0)
+        cd->request_sent = true;
+}
 
 static void telnetty_charset_handler(
     telnetty_context_t* ctx,
@@ -987,12 +894,63 @@ static void telnetty_charset_handler(
     uint8_t command,
     void* user_data
 ) {
-    (void)command;
-    (void)user_data;
     if (!ctx || option != TELNETTY_TELOPT_CHARSET) return;
-    
-    /* Charset option handling would be implemented here */
-    /* This is a placeholder for the full implementation */
+    telnetty_charset_data_t* cd = (telnetty_charset_data_t*)user_data;
+    if (!cd) return;
+
+    /* DO = peer accepted our WILL (we are enabled). WILL = peer offered. */
+    if (command == TELNETTY_DO || command == TELNETTY_WILL) {
+        telnetty_charset_send_request(ctx, cd);
+    }
+}
+
+static void telnetty_charset_sb_handler(
+    telnetty_context_t* ctx,
+    uint8_t option,
+    const uint8_t* data,
+    size_t length,
+    void* user_data
+) {
+    if (!ctx || option != TELNETTY_TELOPT_CHARSET || !data || length < 1)
+        return;
+    telnetty_charset_data_t* cd = (telnetty_charset_data_t*)user_data;
+    if (!cd) return;
+
+    uint8_t sub = data[0];
+    if (sub == TELNETTY_CHARSET_ACCEPTED && length >= 2) {
+        size_t n = length - 1;
+        char* sel = (char*)TELNETTY_OPTIONS_MALLOC(n + 1);
+        if (sel) {
+            memcpy(sel, data + 1, n);
+            sel[n] = '\0';
+            if (cd->selected_charset)
+                TELNETTY_OPTIONS_FREE(cd->selected_charset);
+            cd->selected_charset = sel;
+        }
+        cd->negotiation_complete = true;
+        cd->request_sent = true;
+    } else if (sub == TELNETTY_CHARSET_REQUEST) {
+        /* Peer requests a charset — accept UTF-8 once. */
+        if (!cd->negotiation_complete) {
+            static const uint8_t acc[] = {
+                TELNETTY_CHARSET_ACCEPTED,
+                'U', 'T', 'F', '-', '8'
+            };
+            telnetty_send_subnegotiation(ctx, TELNETTY_TELOPT_CHARSET,
+                                         acc, sizeof(acc));
+            if (cd->selected_charset)
+                TELNETTY_OPTIONS_FREE(cd->selected_charset);
+            cd->selected_charset = (char*)TELNETTY_OPTIONS_MALLOC(6);
+            if (cd->selected_charset)
+                memcpy(cd->selected_charset, "UTF-8", 6);
+            cd->negotiation_complete = true;
+            cd->request_sent = true;
+        }
+        /* Already complete: silent — never re-ACCEPT. */
+    } else if (sub == TELNETTY_CHARSET_REJECTED) {
+        cd->negotiation_complete = false;
+        /* Do NOT clear request_sent — avoids re-REQUEST storms. */
+    }
 }
 
 static int telnetty_enable_charset(
@@ -1000,41 +958,46 @@ static int telnetty_enable_charset(
     const char* const* charsets,
     size_t count
 ) {
-    (void)charsets;
-    (void)count;
     if (!ctx) return -1;
-    
-    /* Allocate charset data */
-    telnetty_charset_data_t* charset_data = (telnetty_charset_data_t*)TELNETTY_OPTIONS_MALLOC(
+
+    telnetty_charset_data_t* cd = (telnetty_charset_data_t*)TELNETTY_OPTIONS_MALLOC(
         sizeof(telnetty_charset_data_t)
     );
-    
-    if (!charset_data) return -1;
-    
-    memset(charset_data, 0, sizeof(telnetty_charset_data_t));
-    
-    /* Register option handler */
-    telnetty_option_tracker_t* tracker = telnetty_option_tracker_create(
-        TELNETTY_TELOPT_CHARSET,
-        telnetty_charset_handler,
-        charset_data
-    );
-    
-    if (!tracker) {
-        TELNETTY_OPTIONS_FREE(charset_data);
-        return -1;
+    if (!cd) return -1;
+    memset(cd, 0, sizeof(*cd));
+
+    if (charsets && count > 0) {
+        cd->supported_charsets = (char**)TELNETTY_OPTIONS_MALLOC(
+            count * sizeof(char*)
+        );
+        if (cd->supported_charsets) {
+            cd->charset_count = count;
+            for (size_t i = 0; i < count; i++) {
+                size_t n = charsets[i] ? strlen(charsets[i]) : 0;
+                cd->supported_charsets[i] = (char*)TELNETTY_OPTIONS_MALLOC(n + 1);
+                if (cd->supported_charsets[i] && charsets[i])
+                    memcpy(cd->supported_charsets[i], charsets[i], n + 1);
+            }
+        }
     }
-    
-    /* Send WILL to enable charset option */
+
+    /* Support both sides; wire command + SB handlers into core option slot. */
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_CHARSET, 1, 1);
+    telnetty_register_option(ctx, TELNETTY_TELOPT_CHARSET,
+                             telnetty_charset_handler, cd);
+    telnetty_register_sb_handler(ctx, TELNETTY_TELOPT_CHARSET,
+                                 telnetty_charset_sb_handler, cd);
+
+    /* Server offers WILL only (not DO) — one direction avoids dual REQUEST. */
     return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_CHARSET);
 }
 
 static TELNETTY_UNUSED const char* telnetty_get_charset(telnetty_context_t* ctx) {
     if (!ctx) return NULL;
-    
-    /* This would need to be integrated with the option tracker system */
-    /* For now, return NULL */
-    return NULL;
+    telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_CHARSET];
+    if (!opt || !opt->user_data) return NULL;
+    telnetty_charset_data_t* cd = (telnetty_charset_data_t*)opt->user_data;
+    return cd->selected_charset;
 }
 
 /* ============================================================================

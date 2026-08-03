@@ -148,12 +148,15 @@ extern "C" {
 #define TELNETTY_TELOPT_CHARSET         42   /* Charset (RFC 2066) */
 #define TELNETTY_TELOPT_EOL             45   /* End of line */
 
-/* Q-Method negotiation states */
-#define TELNETTY_Q_NO      0   /* Option disabled */
-#define TELNETTY_Q_YES     1   /* Option enabled */
-#define TELNETTY_Q_WANTNO  2   /* Want to disable */
-#define TELNETTY_Q_WANTYES 3   /* Want to enable */
-#define TELNETTY_Q_OPOSITE 4   /* Opposite of current state */
+/* RFC 1143 Q-method negotiation states (libtelnet-compatible). */
+#define TELNETTY_Q_NO         0   /* Option disabled */
+#define TELNETTY_Q_YES        1   /* Option enabled */
+#define TELNETTY_Q_WANTNO     2   /* Want to disable */
+#define TELNETTY_Q_WANTYES    3   /* Want to enable */
+#define TELNETTY_Q_WANTNO_OP  4   /* Want disable, then opposite */
+#define TELNETTY_Q_WANTYES_OP 5   /* Want enable, then opposite */
+/* Back-compat alias (typo in early drafts) */
+#define TELNETTY_Q_OPOSITE    TELNETTY_Q_WANTNO_OP
 
 /* ============================================================================
  * Forward Declarations
@@ -282,7 +285,7 @@ struct telnetty_buffer {
  * Option Management
  * ============================================================================ */
 
-/* Option handler function type */
+/* Option handler function type (WILL/WONT/DO/DONT after Q-method settles) */
 typedef void (*telnetty_option_handler_t)(
     telnetty_context_t* ctx,
     uint8_t option,
@@ -290,16 +293,28 @@ typedef void (*telnetty_option_handler_t)(
     void* user_data
 );
 
+/* Subnegotiation handler (option already stripped from payload) */
+typedef void (*telnetty_sb_handler_t)(
+    telnetty_context_t* ctx,
+    uint8_t option,
+    const uint8_t* data,
+    size_t length,
+    void* user_data
+);
+
 /* Option structure for managing TELNET options */
 struct telnetty_option {
     uint8_t option;                     /**< Option code */
-    uint8_t us;                         /**< Our state (Q_METHOD) */
-    uint8_t him;                        /**< Peer state (Q_METHOD) */
+    uint8_t us;                         /**< Our state (RFC 1143 Q-method) */
+    uint8_t him;                        /**< Peer state (RFC 1143 Q-method) */
+    uint8_t support_us;                 /**< 1 = we may enable locally (accept DO) */
+    uint8_t support_him;                /**< 1 = we may allow remote (accept WILL) */
     uint8_t sb_term;                    /**< Subnegotiation terminator */
-    telnetty_buffer_t* sb_data;           /**< Subnegotiation buffer */
-    telnetty_option_handler_t handler;    /**< Option handler */
-    void* user_data;                    /**< User data for handler */
-    struct telnetty_option* next;         /**< Next option in list */
+    telnetty_buffer_t* sb_data;         /**< Subnegotiation buffer */
+    telnetty_option_handler_t handler;  /**< Option command handler */
+    telnetty_sb_handler_t sb_handler;   /**< Subnegotiation handler */
+    void* user_data;                    /**< User data for handlers */
+    struct telnetty_option* next;       /**< Next option in list */
 };
 
 /* ============================================================================
@@ -322,9 +337,10 @@ struct telnetty_context {
     telnetty_option_t* options[256];      /**< Option handlers by code */
     
     /* State tracking */
-    uint8_t current_option;             /**< Current option being negotiated */
-    uint8_t iac_state;                  /**< IAC parsing state */
-    size_t sb_length;                   /**< Subnegotiation length */
+    uint8_t current_option;             /**< Current option being negotiated / SB option */
+    uint8_t iac_state;                  /**< IAC parsing state (WILL/DO/…) */
+    uint8_t sb_got_option;              /**< 1 once SB option byte consumed */
+    size_t sb_length;                   /**< Subnegotiation payload length */
     
     /* Performance counters */
     telnetty_stats_t stats;               /**< Connection statistics */
@@ -410,8 +426,11 @@ static int telnetty_send_command(
 );
 
 /**
- * Send option negotiation
- * 
+ * Send option negotiation using RFC 1143 Q-method.
+ *
+ * Only emits IAC bytes when the desired state actually changes — repeated
+ * WILL/DO of an already-enabled option is a no-op (prevents client spam).
+ *
  * @param ctx TELNET context
  * @param command Command (WILL/WONT/DO/DONT)
  * @param option Option code
@@ -420,6 +439,28 @@ static int telnetty_send_command(
 static int telnetty_send_option(
     telnetty_context_t* ctx,
     uint8_t command,
+    uint8_t option
+);
+
+/**
+ * Declare whether we support enabling an option on our side (us) and/or
+ * the peer (him). Must be set before negotiation; unanswered DO/WILL for
+ * unsupported options are refused with WONT/DONT.
+ *
+ * @return 0 on success or -1 on error
+ */
+static int telnetty_set_option_support(
+    telnetty_context_t* ctx,
+    uint8_t option,
+    int support_us,
+    int support_him
+);
+
+/**
+ * Ensure an option slot exists (creates with Q_NO/Q_NO if missing).
+ */
+static telnetty_option_t* telnetty_ensure_option(
+    telnetty_context_t* ctx,
     uint8_t option
 );
 
@@ -440,18 +481,27 @@ static int telnetty_send_subnegotiation(
 );
 
 /**
- * Register an option handler
- * 
- * @param ctx TELNET context
- * @param option Option code
- * @param handler Option handler function
- * @param user_data User data for handler
+ * Register an option command handler (WILL/DO/...). Creates the option
+ * slot if needed. Does not by itself mark the option supported — call
+ * telnetty_set_option_support() as well.
+ *
  * @return 0 on success or -1 on error
  */
 static int telnetty_register_option(
     telnetty_context_t* ctx,
     uint8_t option,
     telnetty_option_handler_t handler,
+    void* user_data
+);
+
+/**
+ * Register a subnegotiation handler for an option (payload excludes the
+ * option byte).
+ */
+static int telnetty_register_sb_handler(
+    telnetty_context_t* ctx,
+    uint8_t option,
+    telnetty_sb_handler_t handler,
     void* user_data
 );
 
@@ -661,16 +711,51 @@ static TELNETTY_UNUSED telnetty_option_t* telnetty_option_create(uint8_t option)
     telnetty_option_t* opt = (telnetty_option_t*)TELNETTY_MALLOC(sizeof(telnetty_option_t));
     if (!opt) return NULL;
     
+    memset(opt, 0, sizeof(*opt));
     opt->option = option;
     opt->us = TELNETTY_Q_NO;
     opt->him = TELNETTY_Q_NO;
-    opt->sb_term = 0;
-    opt->sb_data = NULL;
-    opt->handler = NULL;
-    opt->user_data = NULL;
-    opt->next = NULL;
+    /* support_us/him default 0 — refuse until set or initiated by us */
     
     return opt;
+}
+
+/* Ensure option slot exists on the context. */
+static telnetty_option_t* telnetty_ensure_option(
+    telnetty_context_t* ctx,
+    uint8_t option
+) {
+    if (!ctx) return NULL;
+    if (!ctx->options[option]) {
+        ctx->options[option] = telnetty_option_create(option);
+    }
+    return ctx->options[option];
+}
+
+/* Raw 3-byte IAC command (bypasses Q-method — for internal use only). */
+static void telnetty_send_negotiate_raw(
+    telnetty_context_t* ctx,
+    uint8_t command,
+    uint8_t option
+) {
+    uint8_t sequence[3] = { TELNETTY_IAC, command, option };
+    if (telnetty_buffer_append(ctx->out_buffer, sequence, 3) < 0)
+        return;
+    ctx->stats.bytes_sent += 3;
+    ctx->stats.commands_sent++;
+}
+
+static int telnetty_set_option_support(
+    telnetty_context_t* ctx,
+    uint8_t option,
+    int support_us,
+    int support_him
+) {
+    telnetty_option_t* opt = telnetty_ensure_option(ctx, option);
+    if (!opt) return -1;
+    opt->support_us = support_us ? 1 : 0;
+    opt->support_him = support_him ? 1 : 0;
+    return 0;
 }
 
 static TELNETTY_UNUSED void telnetty_option_destroy(telnetty_option_t* opt) {
@@ -812,6 +897,10 @@ static TELNETTY_UNUSED int telnetty_process_byte(telnetty_context_t* ctx, uint8_
             case TELNETTY_SB:
                 ctx->state = TELNETTY_STATE_SUBNEG;
                 ctx->sb_length = 0;
+                ctx->current_option = 0;
+                ctx->sb_got_option = 0;
+                if (ctx->sb_buffer)
+                    telnetty_buffer_reset(ctx->sb_buffer);
                 break;
                 
             case TELNETTY_IAC: /* Double IAC - escaped */
@@ -837,48 +926,163 @@ static TELNETTY_UNUSED int telnetty_process_byte(telnetty_context_t* ctx, uint8_
         return 1;
     }
     
-    /* Handle option negotiation */
+    /* Handle option negotiation — full RFC 1143 Q-method (libtelnet-compatible).
+     * Replies only on state transitions; events fire only when state changes
+     * to a confirmed YES/NO relevant to the peer request. */
     if (ctx->state == TELNETTY_STATE_NEGOTIATION) {
         uint8_t option = byte;
         uint8_t command = ctx->iac_state;
-        
         ctx->state = TELNETTY_STATE_DATA;
-        
-        /* Fire option event */
-        telnetty_event_option_t event_data = { option };
-        telnetty_event_data_union_t event = { .option = event_data };
-        
+
+        telnetty_option_t* opt = telnetty_ensure_option(ctx, option);
+        if (!opt) return -1;
+
+        int fire = 0;           /* fire user event? */
+        telnetty_event_type_t ev = TELNETTY_EVENT_WILL;
+        uint8_t hcmd = command; /* command passed to option handler */
+
         switch (command) {
-            case TELNETTY_WILL:
-                telnetty_fire_event(ctx, TELNETTY_EVENT_WILL, &event);
+        case TELNETTY_WILL: /* peer wants him enabled */
+            switch (opt->him) {
+            case TELNETTY_Q_NO:
+                if (opt->support_him) {
+                    opt->him = TELNETTY_Q_YES;
+                    telnetty_send_negotiate_raw(ctx, TELNETTY_DO, option);
+                    fire = 1; ev = TELNETTY_EVENT_WILL;
+                } else {
+                    telnetty_send_negotiate_raw(ctx, TELNETTY_DONT, option);
+                }
                 break;
-            case TELNETTY_WONT:
-                telnetty_fire_event(ctx, TELNETTY_EVENT_WONT, &event);
+            case TELNETTY_Q_YES:
+                /* already on — ignore (no re-DO) */
                 break;
-            case TELNETTY_DO:
-                telnetty_fire_event(ctx, TELNETTY_EVENT_DO, &event);
+            case TELNETTY_Q_WANTNO:
+                opt->him = TELNETTY_Q_NO;
+                fire = 1; ev = TELNETTY_EVENT_WONT; hcmd = TELNETTY_WONT;
                 break;
-            case TELNETTY_DONT:
-                telnetty_fire_event(ctx, TELNETTY_EVENT_DONT, &event);
+            case TELNETTY_Q_WANTNO_OP:
+                opt->him = TELNETTY_Q_YES;
+                fire = 1; ev = TELNETTY_EVENT_WILL;
                 break;
+            case TELNETTY_Q_WANTYES:
+                opt->him = TELNETTY_Q_YES;
+                fire = 1; ev = TELNETTY_EVENT_WILL;
+                break;
+            case TELNETTY_Q_WANTYES_OP:
+                opt->him = TELNETTY_Q_WANTNO;
+                telnetty_send_negotiate_raw(ctx, TELNETTY_DONT, option);
+                fire = 1; ev = TELNETTY_EVENT_WILL;
+                break;
+            }
+            break;
+
+        case TELNETTY_WONT:
+            switch (opt->him) {
+            case TELNETTY_Q_YES:
+                opt->him = TELNETTY_Q_NO;
+                telnetty_send_negotiate_raw(ctx, TELNETTY_DONT, option);
+                fire = 1; ev = TELNETTY_EVENT_WONT;
+                break;
+            case TELNETTY_Q_NO:
+                break;
+            case TELNETTY_Q_WANTNO:
+                opt->him = TELNETTY_Q_NO;
+                fire = 1; ev = TELNETTY_EVENT_WONT;
+                break;
+            case TELNETTY_Q_WANTNO_OP:
+                opt->him = TELNETTY_Q_WANTYES;
+                /* fall through to re-request: peer confirmed off while we
+                 * wanted on after off — ask again */
+                telnetty_send_negotiate_raw(ctx, TELNETTY_DO, option);
+                fire = 1; ev = TELNETTY_EVENT_DO; hcmd = TELNETTY_DO;
+                break;
+            case TELNETTY_Q_WANTYES:
+            case TELNETTY_Q_WANTYES_OP:
+                opt->him = TELNETTY_Q_NO;
+                break;
+            }
+            break;
+
+        case TELNETTY_DO: /* peer wants us enabled */
+            switch (opt->us) {
+            case TELNETTY_Q_NO:
+                if (opt->support_us) {
+                    opt->us = TELNETTY_Q_YES;
+                    telnetty_send_negotiate_raw(ctx, TELNETTY_WILL, option);
+                    fire = 1; ev = TELNETTY_EVENT_DO;
+                } else {
+                    telnetty_send_negotiate_raw(ctx, TELNETTY_WONT, option);
+                }
+                break;
+            case TELNETTY_Q_YES:
+                break;
+            case TELNETTY_Q_WANTNO:
+                opt->us = TELNETTY_Q_NO;
+                fire = 1; ev = TELNETTY_EVENT_DONT; hcmd = TELNETTY_DONT;
+                break;
+            case TELNETTY_Q_WANTNO_OP:
+                opt->us = TELNETTY_Q_YES;
+                fire = 1; ev = TELNETTY_EVENT_DO;
+                break;
+            case TELNETTY_Q_WANTYES:
+                opt->us = TELNETTY_Q_YES;
+                fire = 1; ev = TELNETTY_EVENT_DO;
+                break;
+            case TELNETTY_Q_WANTYES_OP:
+                opt->us = TELNETTY_Q_WANTNO;
+                telnetty_send_negotiate_raw(ctx, TELNETTY_WONT, option);
+                fire = 1; ev = TELNETTY_EVENT_DO;
+                break;
+            }
+            break;
+
+        case TELNETTY_DONT:
+            switch (opt->us) {
+            case TELNETTY_Q_YES:
+                opt->us = TELNETTY_Q_NO;
+                telnetty_send_negotiate_raw(ctx, TELNETTY_WONT, option);
+                fire = 1; ev = TELNETTY_EVENT_DONT;
+                break;
+            case TELNETTY_Q_NO:
+                break;
+            case TELNETTY_Q_WANTNO:
+                opt->us = TELNETTY_Q_NO;
+                fire = 1; ev = TELNETTY_EVENT_WONT; hcmd = TELNETTY_WONT;
+                break;
+            case TELNETTY_Q_WANTNO_OP:
+                opt->us = TELNETTY_Q_WANTYES;
+                telnetty_send_negotiate_raw(ctx, TELNETTY_WILL, option);
+                fire = 1; ev = TELNETTY_EVENT_WILL; hcmd = TELNETTY_WILL;
+                break;
+            case TELNETTY_Q_WANTYES:
+            case TELNETTY_Q_WANTYES_OP:
+                opt->us = TELNETTY_Q_NO;
+                break;
+            }
+            break;
         }
-        
-        /* Update option state if handler exists */
-        telnetty_option_t* opt = ctx->options[option];
-        if (opt && opt->handler) {
-            opt->handler(ctx, option, command, opt->user_data);
+
+        if (fire) {
+            telnetty_event_option_t event_data = { option };
+            telnetty_event_data_union_t event = { .option = event_data };
+            telnetty_fire_event(ctx, ev, &event);
+            if (opt->handler)
+                opt->handler(ctx, option, hcmd, opt->user_data);
+            ctx->stats.options_negotiated++;
         }
-        
-        ctx->stats.options_negotiated++;
+
         return 1;
     }
     
-    /* Handle subnegotiation */
+    /* Handle subnegotiation. First data byte is the option code (RFC 855). */
     if (ctx->state == TELNETTY_STATE_SUBNEG) {
         if (byte == TELNETTY_IAC) {
             ctx->state = TELNETTY_STATE_SUBNEG_IAC;
+        } else if (!ctx->sb_got_option) {
+            /* First SB byte = option; store separately, not in payload. */
+            ctx->current_option = byte;
+            ctx->sb_got_option = 1;
         } else if (ctx->sb_length < TELNETTY_MAX_OPTION_LENGTH) {
-            /* Add byte to subnegotiation buffer */
             if (telnetty_buffer_append(ctx->sb_buffer, &byte, 1) == 1) {
                 ctx->sb_length++;
             }
@@ -889,27 +1093,46 @@ static TELNETTY_UNUSED int telnetty_process_byte(telnetty_context_t* ctx, uint8_
     if (ctx->state == TELNETTY_STATE_SUBNEG_IAC) {
         if (byte == TELNETTY_SE) {
             /* End of subnegotiation */
+            uint8_t option = ctx->current_option;
             ctx->state = TELNETTY_STATE_DATA;
             
-            /* Fire subnegotiation event */
+            /* Fire subnegotiation event (payload excludes option byte) */
             telnetty_event_subnegotiation_t event_data = {
-                ctx->current_option,
+                option,
                 ctx->sb_buffer->data,
                 ctx->sb_length
             };
             telnetty_event_data_union_t event = { .sub = event_data };
             telnetty_fire_event(ctx, TELNETTY_EVENT_SB, &event);
+
+            telnetty_option_t* opt = ctx->options[option];
+            if (opt && opt->sb_handler) {
+                opt->sb_handler(ctx, option,
+                                ctx->sb_buffer->data, ctx->sb_length,
+                                opt->user_data);
+            }
             
             /* Reset subnegotiation buffer */
             telnetty_buffer_reset(ctx->sb_buffer);
             ctx->sb_length = 0;
-        } else {
-            /* Handle escaped IAC in subnegotiation */
-            uint8_t iac_byte = TELNETTY_IAC;
-            if (telnetty_buffer_append(ctx->sb_buffer, &iac_byte, 1) == 1) {
+            ctx->current_option = 0;
+            ctx->sb_got_option = 0;
+            ctx->stats.subnegotiations++;
+        } else if (byte == TELNETTY_IAC) {
+            /* Escaped IAC inside SB */
+            if (ctx->sb_length < TELNETTY_MAX_OPTION_LENGTH &&
+                telnetty_buffer_append(ctx->sb_buffer, &byte, 1) == 1) {
                 ctx->sb_length++;
             }
-            if (ctx->sb_length < TELNETTY_MAX_OPTION_LENGTH && 
+            ctx->state = TELNETTY_STATE_SUBNEG;
+        } else {
+            /* IAC + non-SE: treat as IAC then byte (defensive) */
+            uint8_t iac_byte = TELNETTY_IAC;
+            if (ctx->sb_length < TELNETTY_MAX_OPTION_LENGTH &&
+                telnetty_buffer_append(ctx->sb_buffer, &iac_byte, 1) == 1) {
+                ctx->sb_length++;
+            }
+            if (ctx->sb_length < TELNETTY_MAX_OPTION_LENGTH &&
                 telnetty_buffer_append(ctx->sb_buffer, &byte, 1) == 1) {
                 ctx->sb_length++;
             }
@@ -985,21 +1208,117 @@ static TELNETTY_UNUSED int telnetty_send_command(telnetty_context_t* ctx, uint8_
     return 0;
 }
 
+/* RFC 1143 initiator — only emit IAC when state changes. */
 static int telnetty_send_option(
     telnetty_context_t* ctx,
     uint8_t command,
     uint8_t option
 ) {
     if (!ctx) return -1;
-    
-    uint8_t sequence[3] = { TELNETTY_IAC, command, option };
-    
-    if (telnetty_buffer_append(ctx->out_buffer, sequence, 3) < 0) {
-        return -1;
+
+    /* PROXY mode: pass-through */
+    if (ctx->config.flags & TELNETTY_FLAG_PROXY) {
+        telnetty_send_negotiate_raw(ctx, command, option);
+        return 0;
     }
-    
-    ctx->stats.bytes_sent += 3;
-    
+
+    telnetty_option_t* opt = telnetty_ensure_option(ctx, option);
+    if (!opt) return -1;
+
+    switch (command) {
+    case TELNETTY_WILL:
+        /* Initiating WILL implies we support local enable. */
+        opt->support_us = 1;
+        switch (opt->us) {
+        case TELNETTY_Q_NO:
+            opt->us = TELNETTY_Q_WANTYES;
+            telnetty_send_negotiate_raw(ctx, TELNETTY_WILL, option);
+            break;
+        case TELNETTY_Q_YES:
+            /* already enabled */
+            break;
+        case TELNETTY_Q_WANTNO:
+            opt->us = TELNETTY_Q_WANTNO_OP;
+            break;
+        case TELNETTY_Q_WANTYES:
+            break;
+        case TELNETTY_Q_WANTYES_OP:
+            opt->us = TELNETTY_Q_WANTYES;
+            break;
+        case TELNETTY_Q_WANTNO_OP:
+            break;
+        }
+        break;
+
+    case TELNETTY_WONT:
+        switch (opt->us) {
+        case TELNETTY_Q_YES:
+            opt->us = TELNETTY_Q_WANTNO;
+            telnetty_send_negotiate_raw(ctx, TELNETTY_WONT, option);
+            break;
+        case TELNETTY_Q_NO:
+            break;
+        case TELNETTY_Q_WANTYES:
+            opt->us = TELNETTY_Q_WANTYES_OP;
+            break;
+        case TELNETTY_Q_WANTNO:
+            break;
+        case TELNETTY_Q_WANTNO_OP:
+            opt->us = TELNETTY_Q_WANTNO;
+            break;
+        case TELNETTY_Q_WANTYES_OP:
+            break;
+        }
+        break;
+
+    case TELNETTY_DO:
+        opt->support_him = 1;
+        switch (opt->him) {
+        case TELNETTY_Q_NO:
+            opt->him = TELNETTY_Q_WANTYES;
+            telnetty_send_negotiate_raw(ctx, TELNETTY_DO, option);
+            break;
+        case TELNETTY_Q_YES:
+            break;
+        case TELNETTY_Q_WANTNO:
+            opt->him = TELNETTY_Q_WANTNO_OP;
+            break;
+        case TELNETTY_Q_WANTYES:
+            break;
+        case TELNETTY_Q_WANTYES_OP:
+            opt->him = TELNETTY_Q_WANTYES;
+            break;
+        case TELNETTY_Q_WANTNO_OP:
+            break;
+        }
+        break;
+
+    case TELNETTY_DONT:
+        switch (opt->him) {
+        case TELNETTY_Q_YES:
+            opt->him = TELNETTY_Q_WANTNO;
+            telnetty_send_negotiate_raw(ctx, TELNETTY_DONT, option);
+            break;
+        case TELNETTY_Q_NO:
+            break;
+        case TELNETTY_Q_WANTYES:
+            opt->him = TELNETTY_Q_WANTYES_OP;
+            break;
+        case TELNETTY_Q_WANTNO:
+            break;
+        case TELNETTY_Q_WANTNO_OP:
+            opt->him = TELNETTY_Q_WANTNO;
+            break;
+        case TELNETTY_Q_WANTYES_OP:
+            break;
+        }
+        break;
+
+    default:
+        telnetty_send_negotiate_raw(ctx, command, option);
+        break;
+    }
+
     return 0;
 }
 
@@ -1039,22 +1358,31 @@ static int telnetty_register_option(
     telnetty_option_handler_t handler,
     void* user_data
 ) {
-    if (!ctx || !handler) return -1;
-    
-    /* Remove existing option if present */
-    if (ctx->options[option]) {
-        telnetty_option_destroy(ctx->options[option]);
-    }
-    
-    /* Create new option */
-    telnetty_option_t* opt = telnetty_option_create(option);
+    if (!ctx) return -1;
+
+    telnetty_option_t* opt = telnetty_ensure_option(ctx, option);
     if (!opt) return -1;
-    
+
     opt->handler = handler;
-    opt->user_data = user_data;
-    
-    ctx->options[option] = opt;
-    
+    if (user_data)
+        opt->user_data = user_data;
+    return 0;
+}
+
+static int telnetty_register_sb_handler(
+    telnetty_context_t* ctx,
+    uint8_t option,
+    telnetty_sb_handler_t handler,
+    void* user_data
+) {
+    if (!ctx) return -1;
+
+    telnetty_option_t* opt = telnetty_ensure_option(ctx, option);
+    if (!opt) return -1;
+
+    opt->sb_handler = handler;
+    if (user_data)
+        opt->user_data = user_data;
     return 0;
 }
 
