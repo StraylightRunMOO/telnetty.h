@@ -79,6 +79,7 @@ typedef struct {
     size_t compressed_bytes;            /**< Total compressed bytes */
     size_t uncompressed_bytes;          /**< Total uncompressed bytes */
     double compression_ratio;           /**< Compression ratio */
+    int level;                          /**< zlib level, applied on DO */
 } telnetty_mccp2_data_t;
 
 /**
@@ -174,6 +175,7 @@ typedef struct {
     size_t compressed_bytes;            /**< Total compressed bytes */
     size_t uncompressed_bytes;          /**< Total uncompressed bytes */
     double compression_ratio;           /**< Compression ratio */
+    int level;
 } telnetty_mccp3_data_t;
 
 /**
@@ -398,6 +400,70 @@ static TELNETTY_UNUSED void telnetty_mccp2_data_destroy(telnetty_mccp2_data_t* d
     TELNETTY_COMPRESSION_FREE(data);
 }
 
+static void telnetty_mccp2_data_free(void* p) {
+    telnetty_mccp2_data_t* d = (telnetty_mccp2_data_t*)p;
+    if (!d) return;
+    telnetty_mccp2_cleanup(d);
+    telnetty_mccp2_data_destroy(d);
+}
+
+static int telnetty_mccp2_out_hook(telnetty_context_t* ctx, const uint8_t* data, size_t len) {
+    telnetty_option_t* opt = ctx ? ctx->options[TELNETTY_TELOPT_MCCP2] : NULL;
+    telnetty_mccp2_data_t* d = (opt && opt->user_data) ? (telnetty_mccp2_data_t*)opt->user_data : NULL;
+    if (!d || !d->compressing)
+        return telnetty_buffer_append(ctx->out_buffer, data, len) < 0 ? -1 : (int)len;
+
+#ifdef TELNETTY_HAVE_ZLIB
+    /* Size the sink to `deflateBound` — the tight upper bound zlib reports
+     * for this stream's current state. `len+64` was a heuristic that under-
+     * allocated for tiny inputs whose zlib overhead exceeds 64 bytes. */
+    z_stream* strm = (z_stream*)d->zlib_stream;
+    size_t need = strm ? (size_t)deflateBound(strm, (uLong)len) + 16 : len + 64;
+    if (d->output_size < need) {
+        uint8_t* nb = (uint8_t*)TELNETTY_COMPRESSION_REALLOC(d->output_buffer, need);
+        if (!nb) return -1;
+        d->output_buffer = nb;
+        d->output_size = need;
+    }
+
+    /* Loop in case a single Z_SYNC_FLUSH left avail_in > 0 (rare with a
+     * bound-sized sink, but Z_BUF_ERROR would surface it). */
+    const uint8_t* p = data;
+    size_t rem = len;
+    while (rem > 0) {
+        size_t out_len = 0;
+        int rc = telnetty_mccp2_compress(d, p, rem, d->output_buffer, d->output_size, &out_len);
+        if (rc < 0) return -1;
+        if (out_len && telnetty_buffer_append(ctx->out_buffer, d->output_buffer, out_len) < 0)
+            return -1;
+        if (rc == 0) break;  /* whole input consumed */
+        /* Short write: consume what deflate accepted and grow sink. */
+        size_t consumed = rem - (size_t)strm->avail_in;
+        p += consumed;
+        rem -= consumed;
+        size_t grown = d->output_size * 2;
+        uint8_t* nb = (uint8_t*)TELNETTY_COMPRESSION_REALLOC(d->output_buffer, grown);
+        if (!nb) return -1;
+        d->output_buffer = nb;
+        d->output_size = grown;
+    }
+    return (int)len;
+#else
+    (void)data; (void)len;
+    return -1;
+#endif
+}
+
+static void telnetty_mccp2_begin(telnetty_context_t* ctx, telnetty_mccp2_data_t* d) {
+    if (!ctx || !d || d->compressing) return;
+    if (telnetty_mccp2_init(ctx, d, d->level) != 0) return;
+    /* COMPRESS2 start marker is uncompressed; everything after is zlib. */
+    uint8_t start[5] = { TELNETTY_IAC, TELNETTY_SB, TELNETTY_TELOPT_MCCP2, TELNETTY_IAC, TELNETTY_SE };
+    telnetty_buffer_append(ctx->out_buffer, start, 5);
+    d->enabled = true;
+    telnetty_set_out_hook(ctx, telnetty_mccp2_out_hook);
+}
+
 static void telnetty_mccp2_handler(
     telnetty_context_t* ctx,
     uint8_t option,
@@ -405,61 +471,31 @@ static void telnetty_mccp2_handler(
     void* user_data
 ) {
     if (!ctx || option != TELNETTY_TELOPT_MCCP2) return;
-    
     telnetty_mccp2_data_t* mccp2_data = (telnetty_mccp2_data_t*)user_data;
     if (!mccp2_data) return;
-    
-    switch (command) {
-        case TELNETTY_WILL:
-            /* Peer wants to enable MCCP2 */
-            telnetty_send_option(ctx, TELNETTY_DO, option);
-            mccp2_data->enabled = true;
-            /* Initialize compression */
-            telnetty_mccp2_init(ctx, mccp2_data, TELNETTY_COMPRESSION_LEVEL);
-            break;
-            
-        case TELNETTY_WONT:
-            /* Peer wants to disable MCCP2 */
-            telnetty_send_option(ctx, TELNETTY_DONT, option);
-            mccp2_data->enabled = false;
-            mccp2_data->compressing = false;
-            telnetty_mccp2_cleanup(mccp2_data);
-            break;
-            
-        case TELNETTY_DO:
-            /* Peer agrees to enable MCCP2 */
-            mccp2_data->enabled = true;
-            /* Initialize compression */
-            telnetty_mccp2_init(ctx, mccp2_data, TELNETTY_COMPRESSION_LEVEL);
-            break;
-            
-        case TELNETTY_DONT:
-            /* Peer refuses to enable MCCP2 */
-            mccp2_data->enabled = false;
-            mccp2_data->compressing = false;
-            telnetty_mccp2_cleanup(mccp2_data);
-            break;
+    if (command == TELNETTY_DO) {
+        telnetty_mccp2_begin(ctx, mccp2_data);
+    } else if (command == TELNETTY_DONT || command == TELNETTY_WONT) {
+        telnetty_set_out_hook(ctx, NULL);
+        mccp2_data->enabled = false;
+        telnetty_mccp2_cleanup(mccp2_data);
     }
 }
 
 static TELNETTY_UNUSED int telnetty_enable_mccp2(telnetty_context_t* ctx, int level) {
     if (!ctx) return -1;
-    
-    /* Create MCCP2 data */
+#ifndef TELNETTY_HAVE_ZLIB
+    (void)level;
+    return -1;
+#else
     telnetty_mccp2_data_t* mccp2_data = telnetty_mccp2_data_create();
     if (!mccp2_data) return -1;
-    
-    /* Initialize compression */
-    if (telnetty_mccp2_init(ctx, mccp2_data, level) != 0) {
-        telnetty_mccp2_data_destroy(mccp2_data);
-        return -1;
-    }
-    
-    /* Register option handler */
-    /* Note: In full implementation, this would be integrated with the core */
-    
-    /* Send WILL to enable MCCP2 */
+    mccp2_data->level = level > 0 ? level : TELNETTY_COMPRESSION_LEVEL;
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_MCCP2, 1, 0);
+    telnetty_register_option(ctx, TELNETTY_TELOPT_MCCP2, telnetty_mccp2_handler, NULL);
+    telnetty_option_set_user_data(ctx, TELNETTY_TELOPT_MCCP2, mccp2_data, telnetty_mccp2_data_free);
     return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_MCCP2);
+#endif
 }
 
 static TELNETTY_UNUSED int telnetty_disable_mccp2(telnetty_context_t* ctx) {
@@ -471,10 +507,9 @@ static TELNETTY_UNUSED int telnetty_disable_mccp2(telnetty_context_t* ctx) {
 
 static TELNETTY_UNUSED bool telnetty_is_mccp2_enabled(telnetty_context_t* ctx) {
     if (!ctx) return false;
-    
-    /* This would need integration with compression data */
-    /* For now, return false */
-    return false;
+    telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_MCCP2];
+    telnetty_mccp2_data_t* d = (opt && opt->user_data) ? (telnetty_mccp2_data_t*)opt->user_data : NULL;
+    return d && d->compressing;
 }
 
 static int telnetty_mccp2_send(
@@ -482,10 +517,7 @@ static int telnetty_mccp2_send(
     const uint8_t* data,
     size_t length
 ) {
-    if (!ctx || !data || length == 0) return 0;
-    
-    /* This would need integration with MCCP2 data structure */
-    /* For now, just send data uncompressed */
+    /* telnetty_send already passes through the MCCP hook once DO landed. */
     return telnetty_send(ctx, data, length);
 }
 
@@ -496,13 +528,11 @@ static int telnetty_mccp2_get_stats(
     double* ratio
 ) {
     if (!ctx) return -1;
-    
-    /* This would need integration with MCCP2 data structure */
-    /* For now, return zero statistics */
-    if (compressed_bytes) *compressed_bytes = 0;
-    if (uncompressed_bytes) *uncompressed_bytes = 0;
-    if (ratio) *ratio = 0.0;
-    
+    telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_MCCP2];
+    telnetty_mccp2_data_t* d = (opt && opt->user_data) ? (telnetty_mccp2_data_t*)opt->user_data : NULL;
+    if (compressed_bytes) *compressed_bytes = d ? d->compressed_bytes : 0;
+    if (uncompressed_bytes) *uncompressed_bytes = d ? d->uncompressed_bytes : 0;
+    if (ratio) *ratio = d ? d->compression_ratio : 0.0;
     return 0;
 }
 
@@ -547,17 +577,13 @@ static void telnetty_mccp3_handler(
     
     switch (command) {
         case TELNETTY_WILL:
-            /* Peer wants to enable MCCP3 */
-            telnetty_send_option(ctx, TELNETTY_DO, option);
             mccp3_data->enabled = true;
             mccp3_data->client_mode = true;
-            /* Initialize compression */
-            telnetty_mccp3_init(ctx, mccp3_data, TELNETTY_COMPRESSION_LEVEL);
+            mccp3_data->server_mode = false;
+            telnetty_mccp3_init(ctx, mccp3_data, mccp3_data->level);
             break;
-            
+
         case TELNETTY_WONT:
-            /* Peer wants to disable MCCP3 */
-            telnetty_send_option(ctx, TELNETTY_DONT, option);
             mccp3_data->enabled = false;
             mccp3_data->client_mode = false;
             mccp3_data->server_mode = false;
@@ -565,11 +591,9 @@ static void telnetty_mccp3_handler(
             break;
             
         case TELNETTY_DO:
-            /* Peer agrees to enable MCCP3 */
             mccp3_data->enabled = true;
             mccp3_data->server_mode = true;
-            /* Initialize compression */
-            telnetty_mccp3_init(ctx, mccp3_data, TELNETTY_COMPRESSION_LEVEL);
+            telnetty_mccp3_init(ctx, mccp3_data, mccp3_data->level);
             break;
             
         case TELNETTY_DONT:
@@ -582,24 +606,31 @@ static void telnetty_mccp3_handler(
     }
 }
 
+static void telnetty_mccp3_data_free(void* p) {
+    telnetty_mccp3_data_t* d = (telnetty_mccp3_data_t*)p;
+    if (!d) return;
+    telnetty_mccp3_cleanup(d);
+    telnetty_mccp3_data_destroy(d);
+}
+
 static TELNETTY_UNUSED int telnetty_enable_mccp3(telnetty_context_t* ctx, int level) {
     if (!ctx) return -1;
-    
-    /* Create MCCP3 data */
+#ifndef TELNETTY_HAVE_ZLIB
+    (void)level;
+    return -1;
+#else
     telnetty_mccp3_data_t* mccp3_data = telnetty_mccp3_data_create();
     if (!mccp3_data) return -1;
-    
-    /* Initialize compression */
-    if (telnetty_mccp3_init(ctx, mccp3_data, level) != 0) {
-        telnetty_mccp3_data_destroy(mccp3_data);
-        return -1;
-    }
-    
-    /* Register option handler */
-    /* Note: In full implementation, this would be integrated with the core */
-    
-    /* Send WILL to enable MCCP3 */
+    /* Do NOT preset server_mode/client_mode here — the mccp3_handler
+     * chooses direction based on the peer's WILL vs DO response. Setting a
+     * mode up-front made mccp3_init pick the wrong side (deflate when we
+     * should have been inflating). */
+    mccp3_data->level = level > 0 ? level : TELNETTY_COMPRESSION_LEVEL;
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_MCCP3, 1, 1);
+    telnetty_register_option(ctx, TELNETTY_TELOPT_MCCP3, telnetty_mccp3_handler, NULL);
+    telnetty_option_set_user_data(ctx, TELNETTY_TELOPT_MCCP3, mccp3_data, telnetty_mccp3_data_free);
     return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_MCCP3);
+#endif
 }
 
 static TELNETTY_UNUSED int telnetty_disable_mccp3(telnetty_context_t* ctx) {
@@ -611,10 +642,10 @@ static TELNETTY_UNUSED int telnetty_disable_mccp3(telnetty_context_t* ctx) {
 
 static TELNETTY_UNUSED bool telnetty_is_mccp3_enabled(telnetty_context_t* ctx) {
     if (!ctx) return false;
-    
-    /* This would need integration with compression data */
-    /* For now, return false */
-    return false;
+    telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_MCCP3];
+    telnetty_mccp3_data_t* d = (opt && opt->user_data)
+        ? (telnetty_mccp3_data_t*)opt->user_data : NULL;
+    return d && d->enabled;
 }
 
 static int telnetty_mccp3_send(
@@ -726,39 +757,44 @@ static int telnetty_mccp2_compress(
     size_t* compressed_len
 ) {
     if (!data || !input || !output || !compressed_len) return -1;
-    
+
 #ifdef TELNETTY_HAVE_ZLIB
     if (!data->zlib_stream) return -1;
-    
+
     z_stream* strm = (z_stream*)data->zlib_stream;
-    
-    /* Set up input/output buffers */
+
     strm->next_in = (Bytef*)input;
     strm->avail_in = (uInt)input_len;
     strm->next_out = (Bytef*)output;
     strm->avail_out = (uInt)output_len;
-    
-    /* Compress data */
+
+    /* Z_SYNC_FLUSH may return Z_OK with avail_in > 0 when the sink buffer
+     * fills; in that case the caller must have supplied enough output. Any
+     * other non-OK result is fatal for this stream. */
     int result = deflate(strm, Z_SYNC_FLUSH);
-    if (result != Z_OK) {
+    if (result != Z_OK && result != Z_BUF_ERROR) {
         return -1;
     }
-    
-    /* Calculate compressed length */
+    if (strm->avail_in != 0) {
+        /* Output buffer was too small; caller must retry with more room.
+         * Signal short-write via a distinct return so out_hook can grow. */
+        *compressed_len = output_len - strm->avail_out;
+        return 1;
+    }
+
     *compressed_len = output_len - strm->avail_out;
-    
-    /* Update statistics */
+
     data->uncompressed_bytes += input_len;
     data->compressed_bytes += *compressed_len;
-    
+
     if (data->uncompressed_bytes > 0) {
         data->compression_ratio = (double)data->compressed_bytes / data->uncompressed_bytes;
     }
-    
+
     return 0;
-    
+
 #else
-    /* No zlib support */
+    (void)input_len; (void)output_len;
     return -1;
 #endif
 }
@@ -907,17 +943,23 @@ static int telnetty_mccp3_decompress(
     
     /* Decompress data */
     int result = inflate(strm, Z_SYNC_FLUSH);
-    if (result != Z_OK && result != Z_STREAM_END) {
-        return -1;
-    }
-    
-    /* Calculate decompressed length */
     *decompressed_len = output_len - strm->avail_out;
-    
-    return 0;
-    
+
+    if (result == Z_STREAM_END) {
+        /* Server ended the compressed stream — reset so any post-stream
+         * bytes can decode against a fresh state. Without the reset the
+         * next inflate() would return Z_STREAM_ERROR. */
+        (void)inflateReset(strm);
+        return 0;
+    }
+    if (result == Z_OK || result == Z_BUF_ERROR) {
+        return 0;
+    }
+    /* Z_DATA_ERROR / Z_MEM_ERROR / Z_NEED_DICT: peer stream is corrupt. */
+    return -1;
+
 #else
-    /* No zlib support */
+    (void)input_len; (void)output_len;
     return -1;
 #endif
 }

@@ -57,11 +57,66 @@ extern "C" {
 #endif
 
 #ifndef TELNETTY_MAX_OPTION_LENGTH
-#define TELNETTY_MAX_OPTION_LENGTH 256        /* Maximum option data length */
+#define TELNETTY_MAX_OPTION_LENGTH 256        /* Legacy alias; see MAX_SB_LENGTH */
+#endif
+
+/* Maximum subnegotiation payload the parser will accept. MSSP / GMCP / MCCP
+ * exchanges routinely exceed the historical 256-byte cap, so we raise it to
+ * 64 KiB and surface an EVENT_ERROR on overflow rather than silently drop. */
+#ifndef TELNETTY_MAX_SB_LENGTH
+#define TELNETTY_MAX_SB_LENGTH (64 * 1024)
 #endif
 
 #ifndef TELNETTY_MAX_IAC_SEQUENCES
 #define TELNETTY_MAX_IAC_SEQUENCES 100        /* Maximum pending IAC sequences */
+#endif
+
+/* ============================================================================
+ * Library Version
+ * ============================================================================ */
+
+#define TELNETTY_VERSION_MAJOR  1
+#define TELNETTY_VERSION_MINOR  1
+#define TELNETTY_VERSION_PATCH  0
+#define TELNETTY_VERSION_STRING "1.1.0"
+#define TELNETTY_VERSION_HEX \
+    ((TELNETTY_VERSION_MAJOR << 16) | (TELNETTY_VERSION_MINOR << 8) | TELNETTY_VERSION_PATCH)
+
+/* Error codes surfaced via EVENT_ERROR / telnetty_last_error. Zero is OK so
+ * a fresh context reports no error. Additive — new codes may be appended in
+ * later minors but existing values never change. */
+typedef enum {
+    TELNETTY_OK = 0,
+    TELNETTY_ERR_ALLOC,
+    TELNETTY_ERR_SB_OVERFLOW,
+    TELNETTY_ERR_PROTOCOL,
+    TELNETTY_ERR_TIMEOUT,
+    TELNETTY_ERR_RATE_LIMIT,
+    TELNETTY_ERR_INVAL,
+    TELNETTY_ERR_NOT_IMPLEMENTED,
+    TELNETTY_ERR_CHARSET_UNSUPPORTED,
+    TELNETTY_ERR_COMPRESSION
+} telnetty_error_t;
+
+/* Branch hints for the hot IAC scanner. Fall back to no-ops elsewhere. */
+#ifndef TELNETTY_LIKELY
+#if defined(__GNUC__) || defined(__clang__)
+#define TELNETTY_LIKELY(x)   __builtin_expect(!!(x), 1)
+#define TELNETTY_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+#define TELNETTY_LIKELY(x)   (x)
+#define TELNETTY_UNLIKELY(x) (x)
+#endif
+#endif
+
+#ifndef TELNETTY_RESTRICT
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+#define TELNETTY_RESTRICT restrict
+#elif defined(__GNUC__) || defined(__clang__)
+#define TELNETTY_RESTRICT __restrict__
+#else
+#define TELNETTY_RESTRICT
+#endif
 #endif
 
 /* Enable performance optimizations by default */
@@ -353,6 +408,32 @@ struct telnetty_context {
         size_t initial_buffer_size;     /**< Initial buffer size */
         int timeout_ms;                 /**< Timeout in milliseconds */
     } config;
+
+    /* Optional outbound filter (MCCP). NULL writes straight to out_buffer.
+     * The hook must append to out_buffer itself and must not call back
+     * into telnetty_send. Return bytes accepted, or -1. */
+    int (*out_hook)(struct telnetty_context* ctx, const uint8_t* data, size_t len);
+
+    /* Optional inbound filter (e.g. MCCP-inflate on the client side). When
+     * set, telnetty_process_inbound() will route the raw peer bytes here
+     * and the hook is responsible for calling telnetty_process() on the
+     * inflated result. NULL means no inbound filter. */
+    int (*in_hook)(struct telnetty_context* ctx, const uint8_t* data, size_t len);
+    void* in_hook_user_data;
+
+    /* Last error surfaced through EVENT_ERROR; read via telnetty_last_error(). */
+    telnetty_error_t last_error;
+
+    /* Priority-ordered linked list of extended-event handlers (registered
+     * through telnetty_events.h). Opaque here — treated as an untyped
+     * pointer so telnetty_core can walk / free without depending on the
+     * events header. Cast at use sites. */
+    void* event_handlers;
+
+    /* Attached color state (opaque here — filled in when
+     * telnetty_color_init / _attach installs a telnetty_color_state_t). */
+    void* color_state;
+    void (*color_state_free)(void*);
 };
 
 /* Context flags */
@@ -522,6 +603,40 @@ static TELNETTY_UNUSED telnetty_buffer_t* telnetty_get_output_buffer(telnetty_co
  */
 static TELNETTY_UNUSED int telnetty_flush(telnetty_context_t* ctx);
 
+/** Install or clear the outbound byte filter. NULL restores raw writes. */
+static TELNETTY_UNUSED void telnetty_set_out_hook(
+    telnetty_context_t* ctx,
+    int (*hook)(telnetty_context_t* ctx, const uint8_t* data, size_t len)
+);
+
+/** Install or clear the inbound byte filter. When set, callers use
+ *  telnetty_process_inbound() so the peer's raw bytes are handed to `hook`
+ *  first (e.g. an inflate step for MCCP). Hooks call telnetty_process()
+ *  themselves on the decoded output. NULL restores the pass-through. */
+static TELNETTY_UNUSED void telnetty_set_input_hook(
+    telnetty_context_t* ctx,
+    int (*hook)(telnetty_context_t* ctx, const uint8_t* data, size_t len),
+    void* user_data
+);
+
+/** Route peer bytes through the inbound hook when set, else straight into
+ *  telnetty_process(). Return matches telnetty_process(): bytes accepted or -1. */
+static TELNETTY_UNUSED int telnetty_process_inbound(
+    telnetty_context_t* ctx,
+    const uint8_t* data,
+    size_t length
+);
+
+/** Install a generic RFC 1143 responder: allow[] options get support_us +
+ *  support_him = 1, deny[] options get both = 0, everything else stays at
+ *  its current setting. Pass NULL / 0 to skip an axis. Removes the
+ *  30-line boilerplate switch from every example server/client. */
+static TELNETTY_UNUSED int telnetty_default_option_policy(
+    telnetty_context_t* ctx,
+    const uint8_t* allow, size_t n_allow,
+    const uint8_t* deny,  size_t n_deny
+);
+
 /**
  * Get context statistics
  * 
@@ -564,8 +679,14 @@ static inline TELNETTY_UNUSED uint8_t telnetty_get_option_state(telnetty_context
     return local ? opt->us : opt->him;
 }
 
+/* Extended-event dispatch hook installed by telnetty_events.h. NULL when
+ * the events implementation isn't compiled in. */
+extern void (*telnetty__extended_dispatch_hook)(
+    telnetty_context_t*, telnetty_event_type_t, const telnetty_event_data_union_t*);
+
 /**
- * Fire an event to the callback
+ * Fire an event to the callback. Also runs any registered extended handlers
+ * when the telnetty_events.h implementation is compiled in.
  */
 static inline void telnetty_fire_event(
     telnetty_context_t* ctx,
@@ -575,6 +696,29 @@ static inline void telnetty_fire_event(
     if (ctx->event_cb) {
         ctx->event_cb(ctx, event, data, ctx->user_data);
     }
+    if (telnetty__extended_dispatch_hook && ctx->event_handlers) {
+        telnetty__extended_dispatch_hook(ctx, event, data);
+    }
+}
+
+/** Return the last error surfaced through EVENT_ERROR. Zero if none. */
+static inline TELNETTY_UNUSED telnetty_error_t telnetty_last_error(const telnetty_context_t* ctx) {
+    return ctx ? ctx->last_error : TELNETTY_ERR_INVAL;
+}
+
+/** Internal helper: record and dispatch an EVENT_ERROR. `msg` may be NULL. */
+static inline void telnetty_report_error(
+    telnetty_context_t* ctx,
+    telnetty_error_t code,
+    const char* msg
+) {
+    if (!ctx) return;
+    ctx->last_error = code;
+    ctx->stats.errors++;
+    if (ctx->config.flags & TELNETTY_FLAG_QUIET) return;
+    telnetty_event_error_t e = { (int)code, msg };
+    telnetty_event_data_union_t u = { .error = e };
+    telnetty_fire_event(ctx, TELNETTY_EVENT_ERROR, &u);
 }
 
 /* ============================================================================
@@ -657,6 +801,7 @@ static TELNETTY_UNUSED int telnetty_buffer_append(telnetty_buffer_t* buffer, con
     /* Check if we need to grow the buffer */
     if (buffer->length + length > buffer->size) {
         size_t new_size = buffer->size;
+        if (new_size == 0) new_size = TELNETTY_INITIAL_BUFFER_SIZE;
         while (new_size < buffer->length + length) {
             new_size *= 2;
         }
@@ -733,6 +878,66 @@ static telnetty_option_t* telnetty_ensure_option(
     return ctx->options[option];
 }
 
+/* All outbound bytes go through here so MCCP can wrap the stream. */
+static int telnetty_out_write(telnetty_context_t* ctx, const uint8_t* data, size_t len) {
+    if (!ctx || !data || len == 0) return 0;
+    if (ctx->out_hook)
+        return ctx->out_hook(ctx, data, len);
+    if (telnetty_buffer_append(ctx->out_buffer, data, len) < 0)
+        return -1;
+    return (int)len;
+}
+
+static TELNETTY_UNUSED void telnetty_set_out_hook(
+    telnetty_context_t* ctx,
+    int (*hook)(telnetty_context_t* ctx, const uint8_t* data, size_t len)
+) {
+    if (ctx) ctx->out_hook = hook;
+}
+
+static TELNETTY_UNUSED void telnetty_set_input_hook(
+    telnetty_context_t* ctx,
+    int (*hook)(telnetty_context_t* ctx, const uint8_t* data, size_t len),
+    void* user_data
+) {
+    if (!ctx) return;
+    ctx->in_hook = hook;
+    ctx->in_hook_user_data = user_data;
+}
+
+/* Forward decl for use in process_inbound. */
+static int telnetty_process(telnetty_context_t* ctx,
+                            const uint8_t* TELNETTY_RESTRICT data,
+                            size_t length);
+
+static TELNETTY_UNUSED int telnetty_process_inbound(
+    telnetty_context_t* ctx,
+    const uint8_t* data,
+    size_t length
+) {
+    if (!ctx) return -1;
+    if (ctx->in_hook)
+        return ctx->in_hook(ctx, data, length);
+    return telnetty_process(ctx, data, length);
+}
+
+static TELNETTY_UNUSED int telnetty_default_option_policy(
+    telnetty_context_t* ctx,
+    const uint8_t* allow, size_t n_allow,
+    const uint8_t* deny,  size_t n_deny
+) {
+    if (!ctx) return -1;
+    if (allow) {
+        for (size_t i = 0; i < n_allow; i++)
+            telnetty_set_option_support(ctx, allow[i], 1, 1);
+    }
+    if (deny) {
+        for (size_t i = 0; i < n_deny; i++)
+            telnetty_set_option_support(ctx, deny[i], 0, 0);
+    }
+    return 0;
+}
+
 /* Raw 3-byte IAC command (bypasses Q-method — for internal use only). */
 static void telnetty_send_negotiate_raw(
     telnetty_context_t* ctx,
@@ -740,7 +945,7 @@ static void telnetty_send_negotiate_raw(
     uint8_t option
 ) {
     uint8_t sequence[3] = { TELNETTY_IAC, command, option };
-    if (telnetty_buffer_append(ctx->out_buffer, sequence, 3) < 0)
+    if (telnetty_out_write(ctx, sequence, 3) < 0)
         return;
     ctx->stats.bytes_sent += 3;
     ctx->stats.commands_sent++;
@@ -826,23 +1031,64 @@ static telnetty_context_t* telnetty_create(
     return ctx;
 }
 
+/* Optional hooks populated by later headers (events, color) when their
+ * IMPLEMENTATION macro is defined in the same TU. NULL means the subsystem
+ * is not compiled in and the destroy path skips it. */
+static void (*telnetty__event_handlers_free_hook)(void*) = NULL;
+
+/* Extended-event dispatcher. Called from telnetty_fire_event once the
+ * events implementation installs it. */
+void (*telnetty__extended_dispatch_hook)(
+    telnetty_context_t*, telnetty_event_type_t, const telnetty_event_data_union_t*) = NULL;
+
+/* MCP 2.1 line observer. telnetty_mcp.h installs this on enable so decoded
+ * data bytes can be assembled into #$# lines. NULL when that implementation
+ * is not compiled into this translation unit. */
+void (*telnetty__mcp_data_hook)(
+    telnetty_context_t*, const uint8_t*, size_t) = NULL;
+
+/* Deliver a run of in-band bytes. The MCP hook, if installed, sees the
+ * bytes before the DATA event and must copy anything it wants to keep:
+ * `p` is only valid for the duration of the call. */
+static void telnetty__emit_data(telnetty_context_t* ctx, const uint8_t* p, size_t n) {
+    if (!ctx || !p || n == 0) return;
+    if (telnetty__mcp_data_hook)
+        telnetty__mcp_data_hook(ctx, p, n);
+    telnetty_event_data_t event_data = { p, n };
+    telnetty_event_data_union_t event = { .data = event_data };
+    telnetty_fire_event(ctx, TELNETTY_EVENT_DATA, &event);
+}
+
 static TELNETTY_UNUSED void telnetty_destroy(telnetty_context_t* ctx) {
     if (!ctx) return;
-    
+
     TELNETTY_DEBUG("Destroying TELNET context: %p", (void*)ctx);
-    
+
     /* Free buffers */
     if (ctx->in_buffer) telnetty_buffer_destroy(ctx->in_buffer);
     if (ctx->out_buffer) telnetty_buffer_destroy(ctx->out_buffer);
     if (ctx->sb_buffer) telnetty_buffer_destroy(ctx->sb_buffer);
-    
+
     /* Free option handlers */
     for (int i = 0; i < 256; i++) {
         if (ctx->options[i]) {
             telnetty_option_destroy(ctx->options[i]);
         }
     }
-    
+
+    /* Free the extended-event handler chain if the events implementation
+     * is present in this TU. */
+    if (ctx->event_handlers && telnetty__event_handlers_free_hook) {
+        telnetty__event_handlers_free_hook(ctx->event_handlers);
+        ctx->event_handlers = NULL;
+    }
+
+    /* Release attached color state. */
+    if (ctx->color_state && ctx->color_state_free) {
+        ctx->color_state_free(ctx->color_state);
+        ctx->color_state = NULL;
+    }
+
     TELNETTY_FREE(ctx);
 }
 
@@ -851,27 +1097,75 @@ static TELNETTY_UNUSED int telnetty_process_byte(telnetty_context_t* ctx, uint8_
 
 static int telnetty_process(
     telnetty_context_t* ctx,
-    const uint8_t* data,
+    const uint8_t* TELNETTY_RESTRICT data,
     size_t length
 ) {
     if (!ctx || !data || length == 0) return 0;
-    
+
     int processed = 0;
-    const uint8_t* ptr = data;
-    
+    size_t i = 0;
+
     TELNETTY_DEBUG("Processing %zu bytes of data", length);
-    
-    while (length > 0) {
-        int result = telnetty_process_byte(ctx, *ptr);
+
+    while (i < length) {
+        /* DATA fast path: coalesce a run of plain bytes into one event. */
+        if (ctx->state == TELNETTY_STATE_DATA && TELNETTY_LIKELY(data[i] != TELNETTY_IAC)) {
+            const uint8_t* p = data + i;
+            size_t rem = length - i;
+            const uint8_t* iac = (const uint8_t*)memchr(p, TELNETTY_IAC, rem);
+            size_t run = iac ? (size_t)(iac - p) : rem;
+            telnetty__emit_data(ctx, p, run);
+            processed += (int)run;
+            i += run;
+            continue;
+        }
+
+        /* SB payload fast path: once the option byte is consumed, drain a
+         * run of non-IAC bytes with a single buffer_append. This dodges the
+         * per-byte callback + capacity-check cost that dominated MSSP /
+         * GMCP frames on Cortex-A57. */
+        if (ctx->state == TELNETTY_STATE_SUBNEG && ctx->sb_got_option
+            && TELNETTY_LIKELY(data[i] != TELNETTY_IAC)) {
+            const uint8_t* p = data + i;
+            size_t rem = length - i;
+            const uint8_t* iac = (const uint8_t*)memchr(p, TELNETTY_IAC, rem);
+            size_t run = iac ? (size_t)(iac - p) : rem;
+
+            size_t cap_left = (ctx->sb_length < TELNETTY_MAX_SB_LENGTH)
+                ? (TELNETTY_MAX_SB_LENGTH - ctx->sb_length) : 0;
+            size_t take = (run < cap_left) ? run : cap_left;
+
+            if (take > 0) {
+                if (telnetty_buffer_append(ctx->sb_buffer, p, take) < 0) {
+                    telnetty_report_error(ctx, TELNETTY_ERR_ALLOC,
+                                          "SB buffer append failed");
+                    return -1;
+                }
+                ctx->sb_length += take;
+            }
+
+            if (take < run) {
+                telnetty_report_error(ctx, TELNETTY_ERR_SB_OVERFLOW,
+                                      "SB payload exceeds TELNETTY_MAX_SB_LENGTH");
+                telnetty_buffer_reset(ctx->sb_buffer);
+                ctx->sb_length = 0;
+                ctx->current_option = 0;
+                ctx->sb_got_option = 0;
+                ctx->state = TELNETTY_STATE_DATA;
+            }
+
+            processed += (int)run;
+            i += run;
+            continue;
+        }
+
+        int result = telnetty_process_byte(ctx, data[i]);
         if (result < 0) return result;
-        
         processed++;
-        ptr++;
-        length--;
+        i++;
     }
-    
+
     ctx->stats.bytes_received += processed;
-    
     return processed;
 }
 
@@ -879,15 +1173,12 @@ static int telnetty_process(
 static TELNETTY_UNUSED int telnetty_process_byte(telnetty_context_t* ctx, uint8_t byte) {
     /* Fast path for normal data when not in IAC sequence */
     if (ctx->state == TELNETTY_STATE_DATA && byte != TELNETTY_IAC) {
-        /* Fire data event for normal byte */
-        telnetty_event_data_t event_data = { &byte, 1 };
-        telnetty_event_data_union_t event = { .data = event_data };
-        telnetty_fire_event(ctx, TELNETTY_EVENT_DATA, &event);
+        telnetty__emit_data(ctx, &byte, 1);
         return 1;
     }
     
     /* Handle IAC sequences */
-    if (byte == TELNETTY_IAC) {
+    if (TELNETTY_UNLIKELY(byte == TELNETTY_IAC)) {
         if (ctx->state == TELNETTY_STATE_DATA) {
             ctx->state = TELNETTY_STATE_IAC;
             return 1;
@@ -895,9 +1186,7 @@ static TELNETTY_UNUSED int telnetty_process_byte(telnetty_context_t* ctx, uint8_
             /* Escaped IAC (255) - treat as data */
             ctx->state = TELNETTY_STATE_DATA;
             uint8_t data_byte = TELNETTY_IAC;
-            telnetty_event_data_t event_data = { &data_byte, 1 };
-            telnetty_event_data_union_t event = { .data = event_data };
-            telnetty_fire_event(ctx, TELNETTY_EVENT_DATA, &event);
+            telnetty__emit_data(ctx, &data_byte, 1);
             return 1;
         }
     }
@@ -927,9 +1216,7 @@ static TELNETTY_UNUSED int telnetty_process_byte(telnetty_context_t* ctx, uint8_
                 ctx->state = TELNETTY_STATE_DATA;
                 {
                     uint8_t data_byte = TELNETTY_IAC;
-                    telnetty_event_data_t event_data = { &data_byte, 1 };
-                    telnetty_event_data_union_t event = { .data = event_data };
-                    telnetty_fire_event(ctx, TELNETTY_EVENT_DATA, &event);
+                    telnetty__emit_data(ctx, &data_byte, 1);
                 }
                 break;
                 
@@ -1010,11 +1297,13 @@ static TELNETTY_UNUSED int telnetty_process_byte(telnetty_context_t* ctx, uint8_
                 fire = 1; ev = TELNETTY_EVENT_WONT;
                 break;
             case TELNETTY_Q_WANTNO_OP:
+                /* Peer confirmed OFF while we're mid-flight requesting the
+                 * OPPOSITE (on-then-off toggle). Re-request DO — but do not
+                 * fire an EVENT_DO / call the option handler with hcmd=DO,
+                 * because the option is *not* yet enabled. The eventual real
+                 * WILL from the peer will drive the settled event. */
                 opt->him = TELNETTY_Q_WANTYES;
-                /* fall through to re-request: peer confirmed off while we
-                 * wanted on after off — ask again */
                 telnetty_send_negotiate_raw(ctx, TELNETTY_DO, option);
-                fire = 1; ev = TELNETTY_EVENT_DO; hcmd = TELNETTY_DO;
                 break;
             case TELNETTY_Q_WANTYES:
             case TELNETTY_Q_WANTYES_OP:
@@ -1070,9 +1359,11 @@ static TELNETTY_UNUSED int telnetty_process_byte(telnetty_context_t* ctx, uint8_
                 fire = 1; ev = TELNETTY_EVENT_WONT; hcmd = TELNETTY_WONT;
                 break;
             case TELNETTY_Q_WANTNO_OP:
+                /* Symmetric to the peer-side WANTNO_OP branch above: we
+                 * requested OFF then flipped to want ON. Re-issue WILL but
+                 * don't fire the user-facing settled event yet. */
                 opt->us = TELNETTY_Q_WANTYES;
                 telnetty_send_negotiate_raw(ctx, TELNETTY_WILL, option);
-                fire = 1; ev = TELNETTY_EVENT_WILL; hcmd = TELNETTY_WILL;
                 break;
             case TELNETTY_Q_WANTYES:
             case TELNETTY_Q_WANTYES_OP:
@@ -1102,36 +1393,48 @@ static TELNETTY_UNUSED int telnetty_process_byte(telnetty_context_t* ctx, uint8_
             /* First SB byte = option; store separately, not in payload. */
             ctx->current_option = byte;
             ctx->sb_got_option = 1;
-        } else if (ctx->sb_length < TELNETTY_MAX_OPTION_LENGTH) {
+        } else if (ctx->sb_length < TELNETTY_MAX_SB_LENGTH) {
             if (telnetty_buffer_append(ctx->sb_buffer, &byte, 1) == 1) {
                 ctx->sb_length++;
             }
+        } else {
+            /* Payload exceeds cap — abandon the frame and surface an error
+             * so the caller can drop the peer (RFC 855 leaves the recovery
+             * policy to the implementation). */
+            telnetty_report_error(ctx, TELNETTY_ERR_SB_OVERFLOW,
+                                  "SB payload exceeds TELNETTY_MAX_SB_LENGTH");
+            telnetty_buffer_reset(ctx->sb_buffer);
+            ctx->sb_length = 0;
+            ctx->current_option = 0;
+            ctx->sb_got_option = 0;
+            ctx->state = TELNETTY_STATE_DATA;
         }
         return 1;
     }
-    
+
     if (ctx->state == TELNETTY_STATE_SUBNEG_IAC) {
         if (byte == TELNETTY_SE) {
             /* End of subnegotiation */
             uint8_t option = ctx->current_option;
             ctx->state = TELNETTY_STATE_DATA;
-            
-            /* Fire subnegotiation event (payload excludes option byte) */
+
+            /* Fire subnegotiation event (payload excludes option byte).
+             * Guard against NULL buffer data when the payload was empty. */
+            const uint8_t* sb_data = ctx->sb_buffer && ctx->sb_buffer->data
+                ? ctx->sb_buffer->data
+                : (const uint8_t*)"";
             telnetty_event_subnegotiation_t event_data = {
-                option,
-                ctx->sb_buffer->data,
-                ctx->sb_length
+                option, sb_data, ctx->sb_length
             };
             telnetty_event_data_union_t event = { .sub = event_data };
             telnetty_fire_event(ctx, TELNETTY_EVENT_SB, &event);
 
             telnetty_option_t* opt = ctx->options[option];
             if (opt && opt->sb_handler) {
-                opt->sb_handler(ctx, option,
-                                ctx->sb_buffer->data, ctx->sb_length,
+                opt->sb_handler(ctx, option, sb_data, ctx->sb_length,
                                 opt->user_data);
             }
-            
+
             /* Reset subnegotiation buffer */
             telnetty_buffer_reset(ctx->sb_buffer);
             ctx->sb_length = 0;
@@ -1139,23 +1442,18 @@ static TELNETTY_UNUSED int telnetty_process_byte(telnetty_context_t* ctx, uint8_
             ctx->sb_got_option = 0;
             ctx->stats.subnegotiations++;
         } else if (byte == TELNETTY_IAC) {
-            /* Escaped IAC inside SB */
-            if (ctx->sb_length < TELNETTY_MAX_OPTION_LENGTH &&
+            /* Escaped IAC inside SB — append one 0xFF byte. */
+            if (ctx->sb_length < TELNETTY_MAX_SB_LENGTH &&
                 telnetty_buffer_append(ctx->sb_buffer, &byte, 1) == 1) {
                 ctx->sb_length++;
             }
             ctx->state = TELNETTY_STATE_SUBNEG;
         } else {
-            /* IAC + non-SE: treat as IAC then byte (defensive) */
-            uint8_t iac_byte = TELNETTY_IAC;
-            if (ctx->sb_length < TELNETTY_MAX_OPTION_LENGTH &&
-                telnetty_buffer_append(ctx->sb_buffer, &iac_byte, 1) == 1) {
-                ctx->sb_length++;
-            }
-            if (ctx->sb_length < TELNETTY_MAX_OPTION_LENGTH &&
-                telnetty_buffer_append(ctx->sb_buffer, &byte, 1) == 1) {
-                ctx->sb_length++;
-            }
+            /* IAC + non-SE: RFC 855 leaves this undefined. Treat as a
+             * protocol error rather than smuggling the stray bytes into
+             * the payload, then resume in the SUBNEG state. */
+            telnetty_report_error(ctx, TELNETTY_ERR_PROTOCOL,
+                                  "IAC followed by non-SE / non-IAC inside SB");
             ctx->state = TELNETTY_STATE_SUBNEG;
         }
         return 1;
@@ -1167,11 +1465,11 @@ static TELNETTY_UNUSED int telnetty_process_byte(telnetty_context_t* ctx, uint8_
 
 static int telnetty_send(
     telnetty_context_t* ctx,
-    const uint8_t* data,
+    const uint8_t* TELNETTY_RESTRICT data,
     size_t length
 ) {
     if (!ctx || !data || length == 0) return 0;
-    
+
     /* Escape any IAC bytes in the data */
     const uint8_t* ptr = data;
     size_t remaining = length;
@@ -1184,7 +1482,7 @@ static int telnetty_send(
             /* Send data before IAC */
             size_t before_iac = iac - ptr;
             if (before_iac > 0) {
-                if (telnetty_buffer_append(ctx->out_buffer, ptr, before_iac) < 0) {
+                if (telnetty_out_write(ctx, ptr, before_iac) < 0) {
                     return -1;
                 }
                 sent += before_iac;
@@ -1192,7 +1490,7 @@ static int telnetty_send(
             
             /* Send escaped IAC */
             uint8_t escaped_iac[2] = { TELNETTY_IAC, TELNETTY_IAC };
-            if (telnetty_buffer_append(ctx->out_buffer, escaped_iac, 2) < 0) {
+            if (telnetty_out_write(ctx, escaped_iac, 2) < 0) {
                 return -1;
             }
             sent += 2;
@@ -1201,7 +1499,7 @@ static int telnetty_send(
             remaining -= (before_iac + 1);
         } else {
             /* Send remaining data */
-            if (telnetty_buffer_append(ctx->out_buffer, ptr, remaining) < 0) {
+            if (telnetty_out_write(ctx, ptr, remaining) < 0) {
                 return -1;
             }
             sent += remaining;
@@ -1219,7 +1517,7 @@ static TELNETTY_UNUSED int telnetty_send_command(telnetty_context_t* ctx, uint8_
     
     uint8_t sequence[2] = { TELNETTY_IAC, command };
     
-    if (telnetty_buffer_append(ctx->out_buffer, sequence, 2) < 0) {
+    if (telnetty_out_write(ctx, sequence, 2) < 0) {
         return -1;
     }
     
@@ -1352,7 +1650,7 @@ static int telnetty_send_subnegotiation(
     
     /* Start subnegotiation */
     uint8_t start[3] = { TELNETTY_IAC, TELNETTY_SB, option };
-    if (telnetty_buffer_append(ctx->out_buffer, start, 3) < 0) {
+    if (telnetty_out_write(ctx, start, 3) < 0) {
         return -1;
     }
     
@@ -1363,7 +1661,7 @@ static int telnetty_send_subnegotiation(
     
     /* End subnegotiation */
     uint8_t end[2] = { TELNETTY_IAC, TELNETTY_SE };
-    if (telnetty_buffer_append(ctx->out_buffer, end, 2) < 0) {
+    if (telnetty_out_write(ctx, end, 2) < 0) {
         return -1;
     }
     
@@ -1384,7 +1682,11 @@ static int telnetty_register_option(
     if (!opt) return -1;
 
     opt->handler = handler;
-    if (user_data)
+    /* Never clobber an owned user_data (installed via
+     * telnetty_option_set_user_data with a freer) — that would silently leak
+     * the previous payload and drop its destructor. Callers that want to
+     * replace ownership must go through telnetty_option_set_user_data. */
+    if (user_data && !opt->user_data)
         opt->user_data = user_data;
     return 0;
 }
@@ -1401,7 +1703,7 @@ static int telnetty_register_sb_handler(
     if (!opt) return -1;
 
     opt->sb_handler = handler;
-    if (user_data)
+    if (user_data && !opt->user_data)
         opt->user_data = user_data;
     return 0;
 }

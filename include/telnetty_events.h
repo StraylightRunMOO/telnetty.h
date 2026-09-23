@@ -591,6 +591,49 @@ static TELNETTY_UNUSED size_t telnetty_event_queue_count(telnetty_event_queue_t*
  * Event Handler Implementation
  * ============================================================================ */
 
+/* Free the whole handler chain rooted at `p`. Installed onto
+ * telnetty__event_handlers_free_hook so telnetty_destroy can release the
+ * list without depending on this header. */
+static void telnetty__events_free_chain(void* p) {
+    telnetty_event_handler_t* h = (telnetty_event_handler_t*)p;
+    while (h) {
+        telnetty_event_handler_t* next = h->next;
+        TELNETTY_EVENTS_FREE(h);
+        h = next;
+    }
+}
+
+/* Walk the ctx->event_handlers chain, invoking every handler whose
+ * event_type matches (or that registered as a wildcard via
+ * TELNETTY_EVENT_CUSTOM_START). Installed onto
+ * telnetty__extended_dispatch_hook so core telnetty_fire_event routes
+ * through us. */
+static void telnetty__events_dispatch(
+    telnetty_context_t* ctx,
+    telnetty_event_type_t type,
+    const telnetty_event_data_union_t* data
+) {
+    if (!ctx || !ctx->event_handlers) return;
+    telnetty_event_handler_t* h = (telnetty_event_handler_t*)ctx->event_handlers;
+    while (h) {
+        telnetty_event_handler_t* next = h->next;
+        if (h->event_type == type || h->event_type == TELNETTY_EVENT_CUSTOM_START) {
+            h->cb(ctx, type, data, h->user_data, h->priority);
+        }
+        h = next;
+    }
+}
+
+/* One-time hook install so telnetty_destroy can walk our list and the core
+ * fire_event routes through us. Runs on the first register call — hooks are
+ * plain function pointers with no init-order dependency. */
+static inline void telnetty__events_ensure_hook(void) {
+    if (!telnetty__event_handlers_free_hook)
+        telnetty__event_handlers_free_hook = telnetty__events_free_chain;
+    if (!telnetty__extended_dispatch_hook)
+        telnetty__extended_dispatch_hook = telnetty__events_dispatch;
+}
+
 static int telnetty_register_event_handler(
     telnetty_context_t* ctx,
     telnetty_event_type_t event_type,
@@ -599,22 +642,26 @@ static int telnetty_register_event_handler(
     telnetty_event_priority_t priority
 ) {
     if (!ctx || !cb) return -1;
-    
-    /* Create handler structure */
+
     telnetty_event_handler_t* handler = (telnetty_event_handler_t*)TELNETTY_EVENTS_MALLOC(sizeof(telnetty_event_handler_t));
     if (!handler) return -1;
-    
+
     handler->event_type = event_type;
     handler->cb = cb;
     handler->user_data = user_data;
     handler->priority = priority;
     handler->next = NULL;
-    
-    /* Note: In a full implementation, we'd need to store these handlers in the context */
-    /* For now, we'll just create the structure and return */
-    
-    TELNETTY_EVENTS_FREE(handler); /* Temporary - remove when integrated with context */
-    
+
+    telnetty__events_ensure_hook();
+
+    /* Priority-ordered insert: CRITICAL > HIGH > NORMAL > LOW; FIFO within
+     * the same priority. */
+    telnetty_event_handler_t** slot = (telnetty_event_handler_t**)&ctx->event_handlers;
+    while (*slot && (*slot)->priority >= priority) {
+        slot = &(*slot)->next;
+    }
+    handler->next = *slot;
+    *slot = handler;
     return 0;
 }
 
@@ -623,13 +670,20 @@ static int telnetty_unregister_event_handler(
     telnetty_event_type_t event_type,
     telnetty_extended_event_callback_t cb
 ) {
-    (void)event_type;
     if (!ctx || !cb) return -1;
-    
-    /* Note: In a full implementation, we'd search and remove the handler */
-    /* For now, just return success */
-    
-    return 0;
+    telnetty_event_handler_t** slot = (telnetty_event_handler_t**)&ctx->event_handlers;
+    int removed = 0;
+    while (*slot) {
+        telnetty_event_handler_t* h = *slot;
+        if (h->cb == cb && h->event_type == event_type) {
+            *slot = h->next;
+            TELNETTY_EVENTS_FREE(h);
+            removed++;
+            continue;
+        }
+        slot = &h->next;
+    }
+    return removed > 0 ? 0 : -1;
 }
 
 static void telnetty_fire_event_ex(
@@ -640,20 +694,34 @@ static void telnetty_fire_event_ex(
 ) {
     (void)priority;
     if (!ctx) return;
-    
-    /* For now, just delegate to the basic event system */
-    /* In a full implementation, we'd also queue the event and handle priorities */
-    
+    /* telnetty_fire_event runs the basic callback and, via the installed
+     * dispatch hook, the extended handler chain. Priority is used at
+     * registration time (ordering); at dispatch we honor that order. */
     telnetty_fire_event(ctx, type, data);
 }
 
 static TELNETTY_UNUSED int telnetty_process_events(telnetty_context_t* ctx) {
     if (!ctx) return -1;
     
-    /* Note: In a full implementation with integrated event queue,
-     * we'd process queued events here */
-    
     return 0;
+}
+
+/* Binary-safe custom event fire. Prefer this — the legacy variant below
+ * runs strlen() on the caller's pointer, which is UB for non-string data. */
+static TELNETTY_UNUSED void telnetty_fire_custom_event_bin(
+    telnetty_context_t* ctx,
+    int event_id,
+    const void* data,
+    size_t length,
+    telnetty_event_priority_t priority
+) {
+    if (!ctx || event_id < TELNETTY_EVENT_CUSTOM_START) return;
+
+    telnetty_event_data_union_t event_data;
+    event_data.data.data = (const uint8_t*)data;
+    event_data.data.length = length;
+
+    telnetty_fire_event_ex(ctx, (telnetty_event_type_t)event_id, priority, &event_data);
 }
 
 static void telnetty_fire_custom_event(
@@ -662,15 +730,10 @@ static void telnetty_fire_custom_event(
     void* data,
     telnetty_event_priority_t priority
 ) {
-    if (!ctx || event_id < TELNETTY_EVENT_CUSTOM_START) return;
-    
-    /* Create custom event data */
-    telnetty_event_data_union_t event_data;
-    event_data.data.data = (const uint8_t*)data;
-    event_data.data.length = data ? strlen((const char*)data) : 0;
-    
-    /* Fire the event */
-    telnetty_fire_event_ex(ctx, (telnetty_event_type_t)event_id, priority, &event_data);
+    /* Legacy signal-only path. Callers must NOT rely on the payload length
+     * — pass NULL for data, or use telnetty_fire_custom_event_bin() for
+     * binary/known-length payloads. */
+    telnetty_fire_custom_event_bin(ctx, event_id, data, 0, priority);
 }
 
 /* ============================================================================

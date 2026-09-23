@@ -127,8 +127,9 @@ static void test_data_processing(void) {
     
     int processed = telnetty_process(ctx, (const uint8_t*)test_data, strlen(test_data));
     TEST_ASSERT_EQUAL((int)strlen(test_data), processed, "Data processing failed");
-    TEST_ASSERT_EQUAL(14, event_count, "Event count incorrect");
+    TEST_ASSERT_EQUAL(1, event_count, "Plain bytes coalesce into one DATA event");
     TEST_ASSERT_EQUAL(TELNETTY_EVENT_DATA, last_event, "Last event incorrect");
+    TEST_ASSERT(strcmp(last_data, test_data) == 0, "Coalesced payload mismatch");
     
     /* Test IAC escape */
     const uint8_t iac_data[] = {TELNETTY_IAC, TELNETTY_IAC, 'H', 'i'};

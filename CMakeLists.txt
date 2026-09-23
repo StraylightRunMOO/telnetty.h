@@ -1,9 +1,11 @@
 cmake_minimum_required(VERSION 3.10)
-project(Telnetty VERSION 1.0.0 LANGUAGES C)
+project(Telnetty VERSION 1.1.0 LANGUAGES C)
 
 # Set C standard
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+# strdup / strndup
+add_compile_definitions(_POSIX_C_SOURCE=200809L)
 
 # Options
 option(BUILD_EXAMPLES "Build example programs" ON)
@@ -131,6 +133,24 @@ if(BUILD_TESTS)
     endif()
     
     add_test(NAME test_comprehensive COMMAND test_comprehensive)
+
+    add_executable(test_qmethod tests/test_qmethod.c)
+    add_test(NAME test_qmethod COMMAND test_qmethod)
+
+    add_executable(test_protocols tests/test_protocols.c)
+    if(ZLIB_FOUND)
+        target_compile_definitions(test_protocols PRIVATE TELNETTY_HAVE_ZLIB)
+        target_link_libraries(test_protocols ${ZLIB_LIBRARIES})
+    endif()
+    add_test(NAME test_protocols COMMAND test_protocols)
+
+    # 1.1 polish regression tests
+    add_executable(test_polish tests/test_polish.c)
+    if(ZLIB_FOUND)
+        target_compile_definitions(test_polish PRIVATE TELNETTY_HAVE_ZLIB)
+        target_link_libraries(test_polish ${ZLIB_LIBRARIES})
+    endif()
+    add_test(NAME test_polish COMMAND test_polish)
 endif()
 
 # Documentation

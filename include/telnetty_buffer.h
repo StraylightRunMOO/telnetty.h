@@ -573,18 +573,26 @@ static telnetty_buffer_pool_t* telnetty_buffer_pool_create(
         return NULL;
     }
     
-    /* Pre-allocate buffers */
+    /* Pre-allocate buffers — pack densely so pool_get's LIFO index is valid.
+     * On any allocation failure, tear down cleanly rather than leaving NULL
+     * gaps that would later cause a NULL-deref from pool_get. */
     for (size_t i = 0; i < capacity; i++) {
-        pool->buffers[i] = telnetty_buffer_create_ex(buffer_size, TELNETTY_BUFFER_ALLOC_DYNAMIC, NULL);
-        if (pool->buffers[i]) {
-            pool->count++;
+        telnetty_buffer_t* buf = telnetty_buffer_create_ex(buffer_size, TELNETTY_BUFFER_ALLOC_DYNAMIC, NULL);
+        if (!buf) {
+            for (size_t j = 0; j < pool->count; j++) {
+                telnetty_buffer_destroy(pool->buffers[j]);
+            }
+            TELNETTY_BUFFER_FREE(pool->buffers);
+            TELNETTY_BUFFER_FREE(pool);
+            return NULL;
         }
+        pool->buffers[pool->count++] = buf;
     }
-    
+
     /* Update statistics */
     g_buffer_stats.total_allocated += pool->count * buffer_size;
     g_buffer_stats.allocations += pool->count;
-    
+
     return pool;
 }
 
@@ -603,18 +611,19 @@ static TELNETTY_UNUSED void telnetty_buffer_pool_destroy(telnetty_buffer_pool_t*
 }
 
 static TELNETTY_UNUSED telnetty_buffer_t* telnetty_buffer_pool_get(telnetty_buffer_pool_t* pool) {
-    if (!pool || pool->count == 0) {
+    if (!pool) return NULL;
+    if (pool->count == 0) {
+        /* Pool empty — fall back to a fresh allocation of the pool's own
+         * buffer size. Callers can still `pool_put` the result later, up to
+         * `capacity`. Miss counted so users can spot under-sized pools. */
         g_buffer_stats.pool_misses++;
-        return NULL;
+        return telnetty_buffer_create_ex(pool->max_size, TELNETTY_BUFFER_ALLOC_DYNAMIC, NULL);
     }
-    
-    /* Get buffer from pool */
+
     telnetty_buffer_t* buffer = pool->buffers[--pool->count];
     g_buffer_stats.pool_hits++;
-    
-    /* Reset buffer for reuse */
+
     telnetty_buffer_reset_ex(buffer);
-    
     return buffer;
 }
 
@@ -831,30 +840,34 @@ static telnetty_buffer_chain_t* telnetty_buffer_chain_split(
     size_t position
 ) {
     if (!chain || position >= chain->total_length) return NULL;
-    
+
     /* Create new chain for the split */
     telnetty_buffer_chain_t* new_chain = telnetty_buffer_chain_create();
     if (!new_chain) return NULL;
-    
+
+    /* Snapshot the original tail before we mutate chain->tail below.
+     * Prior versions read chain->tail after reassigning it, which pointed
+     * new_chain->tail at the wrong end of the split. */
+    telnetty_buffer_t* orig_tail = chain->tail;
+
     /* Find split position */
     telnetty_buffer_t* current = chain->head;
     size_t current_pos = 0;
     telnetty_buffer_t* prev = NULL;
-    
+
     while (current && current_pos + telnetty_buffer_remaining(current) <= position) {
         current_pos += telnetty_buffer_remaining(current);
         prev = current;
         current = current->next;
     }
-    
+
     if (!current) {
         telnetty_buffer_chain_destroy(new_chain);
         return NULL;
     }
-    
-    /* Split at buffer boundary if possible */
+
     if (current_pos == position) {
-        /* Split between buffers */
+        /* Clean split between whole buffers. */
         if (prev) {
             prev->next = NULL;
             chain->tail = prev;
@@ -862,64 +875,52 @@ static telnetty_buffer_chain_t* telnetty_buffer_chain_split(
             chain->head = NULL;
             chain->tail = NULL;
         }
-        
+
         new_chain->head = current;
-        new_chain->tail = chain->tail; /* Original tail */
-        
-        /* Update lengths */
-        size_t remaining_length = chain->total_length - position;
-        new_chain->total_length = remaining_length;
-        new_chain->buffer_count = chain->buffer_count;
-        
-        chain->total_length = position;
-        
-        /* Count buffers in new chain */
-        size_t new_count = 0;
-        telnetty_buffer_t* temp = new_chain->head;
-        while (temp) {
-            new_count++;
-            temp = temp->next;
-        }
-        new_chain->buffer_count = new_count;
-        chain->buffer_count -= new_count;
-        
+        new_chain->tail = orig_tail;
     } else {
-        /* Need to split within a buffer - more complex */
-        /* For simplicity, we'll just move buffers after the split point */
-        if (prev) {
-            prev->next = NULL;
-            chain->tail = prev;
-        } else {
-            chain->head = NULL;
-            chain->tail = NULL;
+        /* Split within a buffer: cut `current` at (position - current_pos)
+         * bytes past its read cursor. Left half stays on `chain`; right half
+         * is a fresh dynamic buffer that leads `new_chain`. */
+        size_t cut = position - current_pos;
+        size_t rem = telnetty_buffer_remaining(current);
+        size_t right_len = rem - cut;
+
+        telnetty_buffer_t* right = telnetty_buffer_create(right_len ? right_len : 1);
+        if (!right) {
+            telnetty_buffer_chain_destroy(new_chain);
+            return NULL;
         }
-        
-        new_chain->head = current;
-        new_chain->tail = chain->tail;
-        
-        /* Update lengths approximately */
-        size_t remaining_length = chain->total_length - position;
-        new_chain->total_length = remaining_length;
-        chain->total_length = position;
-        
-        /* Recount buffers */
-        size_t new_count = 0;
-        telnetty_buffer_t* temp = new_chain->head;
-        while (temp) {
-            new_count++;
-            temp = temp->next;
+        if (right_len > 0) {
+            memcpy(right->data,
+                   (uint8_t*)telnetty_buffer_position(current) + cut,
+                   right_len);
+            right->length = right_len;
         }
-        new_chain->buffer_count = new_count;
-        
-        temp = chain->head;
-        size_t old_count = 0;
-        while (temp) {
-            old_count++;
-            temp = temp->next;
-        }
-        chain->buffer_count = old_count;
+
+        /* Truncate `current` to hold only its left half. */
+        current->length = current->offset + cut;
+
+        right->next = current->next;
+        current->next = NULL;
+        chain->tail = current;
+
+        new_chain->head = right;
+        new_chain->tail = right->next ? orig_tail : right;
     }
-    
+
+    /* Recount buffers on both sides. */
+    size_t new_count = 0;
+    for (telnetty_buffer_t* t = new_chain->head; t; t = t->next) new_count++;
+    size_t old_count = 0;
+    for (telnetty_buffer_t* t = chain->head; t; t = t->next) old_count++;
+    new_chain->buffer_count = new_count;
+    chain->buffer_count = old_count;
+
+    size_t remaining_length = chain->total_length - position;
+    new_chain->total_length = remaining_length;
+    chain->total_length = position;
+
     return new_chain;
 }
 
@@ -1031,8 +1032,10 @@ static int telnetty_buffer_ensure_capacity(
     /* Don't resize static buffers */
     if (buffer->flags & TELNETTY_BUFFER_FLAG_STATIC) return -1;
     
-    /* Calculate new size */
+    /* Calculate new size. Clamp before doubling so a zero-size buffer
+     * (e.g. from a reference view) does not spin forever at 0 * 2 = 0. */
     size_t new_size = buffer->size;
+    if (new_size == 0) new_size = TELNETTY_INITIAL_BUFFER_SIZE;
     while (new_size < minimum_size) {
         new_size *= 2;
     }
@@ -1095,13 +1098,23 @@ static int telnetty_buffer_find(
     size_t search_length = buffer->length - start_offset;
     
     if (data_length > search_length) return -1;
-    
-    for (size_t i = 0; i <= search_length - data_length; i++) {
-        if (memcmp(start + i, data, data_length) == 0) {
-            return (int)(start_offset + i);
+
+    /* memchr on the first byte, memcmp on the tail — turns the naive O(nm)
+     * scan into O(n) in the common case where the leading byte is rare. */
+    const uint8_t first = data[0];
+    const uint8_t* cursor = start;
+    size_t remaining = search_length - data_length + 1;
+    while (remaining > 0) {
+        const uint8_t* hit = (const uint8_t*)memchr(cursor, first, remaining);
+        if (!hit) return -1;
+        if (data_length == 1 || memcmp(hit, data, data_length) == 0) {
+            return (int)(start_offset + (hit - start));
         }
+        size_t consumed = (size_t)(hit - cursor) + 1;
+        if (consumed >= remaining) return -1;
+        remaining -= consumed;
+        cursor = hit + 1;
     }
-    
     return -1;
 }
 

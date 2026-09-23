@@ -142,28 +142,33 @@ static void counting_event_handler(
 static void test_events_all_types(void) {
     /* Reset counters */
     memset(event_counts, 0, sizeof(event_counts));
-    
+
     telnetty_context_t* ctx = telnetty_create(counting_event_handler, NULL);
     TEST_ASSERT_NOT_NULL(ctx, "Context for event testing");
-    
+
+    /* Under RFC 1143 the settled event only fires once we've decided to
+     * accept the peer's request. Declare support first so the negotiation
+     * reaches Q_YES and the event dispatches. */
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_ECHO, 1, 1);
+
     /* Test data events */
     telnetty_process(ctx, (const uint8_t*)"A", 1);
     TEST_ASSERT(event_counts[TELNETTY_EVENT_DATA] >= 1, "Data event fired");
-    
+
     /* Test IAC events - send IAC NOP */
     const uint8_t iac_nop[] = {TELNETTY_IAC, TELNETTY_NOP};
     telnetty_process(ctx, iac_nop, sizeof(iac_nop));
     TEST_ASSERT(event_counts[TELNETTY_EVENT_IAC] >= 1, "IAC event fired");
-    
+
     /* Test option negotiation events */
     const uint8_t will_echo[] = {TELNETTY_IAC, TELNETTY_WILL, TELNETTY_TELOPT_ECHO};
     telnetty_process(ctx, will_echo, sizeof(will_echo));
     TEST_ASSERT(event_counts[TELNETTY_EVENT_WILL] >= 1, "WILL event fired");
-    
+
     const uint8_t do_echo[] = {TELNETTY_IAC, TELNETTY_DO, TELNETTY_TELOPT_ECHO};
     telnetty_process(ctx, do_echo, sizeof(do_echo));
     TEST_ASSERT(event_counts[TELNETTY_EVENT_DO] >= 1, "DO event fired");
-    
+
     telnetty_destroy(ctx);
 }
 
@@ -611,26 +616,29 @@ static void test_protocol_iac_commands(void) {
 static void test_protocol_negotiation(void) {
     telnetty_context_t* ctx = telnetty_create(counting_event_handler, NULL);
     TEST_ASSERT_NOT_NULL(ctx, "Context for negotiation tests");
-    
+
     memset(event_counts, 0, sizeof(event_counts));
-    
+
+    /* Enable support so the Q-method reaches Q_YES on each request. */
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_ECHO, 1, 1);
+
     /* Test all negotiation commands */
     const uint8_t will_echo[] = {TELNETTY_IAC, TELNETTY_WILL, TELNETTY_TELOPT_ECHO};
     telnetty_process(ctx, will_echo, sizeof(will_echo));
     TEST_ASSERT(event_counts[TELNETTY_EVENT_WILL] >= 1, "WILL event");
-    
+
     const uint8_t wont_echo[] = {TELNETTY_IAC, TELNETTY_WONT, TELNETTY_TELOPT_ECHO};
     telnetty_process(ctx, wont_echo, sizeof(wont_echo));
     TEST_ASSERT(event_counts[TELNETTY_EVENT_WONT] >= 1, "WONT event");
-    
+
     const uint8_t do_echo[] = {TELNETTY_IAC, TELNETTY_DO, TELNETTY_TELOPT_ECHO};
     telnetty_process(ctx, do_echo, sizeof(do_echo));
     TEST_ASSERT(event_counts[TELNETTY_EVENT_DO] >= 1, "DO event");
-    
+
     const uint8_t dont_echo[] = {TELNETTY_IAC, TELNETTY_DONT, TELNETTY_TELOPT_ECHO};
     telnetty_process(ctx, dont_echo, sizeof(dont_echo));
     TEST_ASSERT(event_counts[TELNETTY_EVENT_DONT] >= 1, "DONT event");
-    
+
     telnetty_destroy(ctx);
 }
 

@@ -675,45 +675,50 @@ static int telnetty_color_append_number(
  * Core Color Implementation
  * ============================================================================ */
 
+/* Freer bound onto ctx->color_state_free by telnetty_color_init. */
+static void telnetty__color_state_free_hook(void* p) {
+    telnetty_color_state_destroy((telnetty_color_state_t*)p);
+}
+
+/* Attach fresh color state to ctx unless one is already installed. */
+static telnetty_color_state_t* telnetty__color_state(telnetty_context_t* ctx) {
+    if (!ctx) return NULL;
+    if (ctx->color_state) return (telnetty_color_state_t*)ctx->color_state;
+    telnetty_color_state_t* s = telnetty_color_state_create();
+    if (!s) return NULL;
+    ctx->color_state = s;
+    ctx->color_state_free = telnetty__color_state_free_hook;
+    return s;
+}
+
 static TELNETTY_UNUSED int telnetty_color_init(telnetty_context_t* ctx, bool auto_detect) {
-    if (!ctx) return -1;
-    
-    /* Create color state */
-    telnetty_color_state_t* state = telnetty_color_state_create();
-    if (!state) return -1;
-    
-    state->auto_detect = auto_detect;
-    
-    /* This would be stored in the context structure */
-    /* For now, just return success */
-    
+    telnetty_color_state_t* s = telnetty__color_state(ctx);
+    if (!s) return -1;
+    s->auto_detect = auto_detect;
     return 0;
 }
 
 static TELNETTY_UNUSED int telnetty_color_cleanup(telnetty_context_t* ctx) {
     if (!ctx) return -1;
-    
-    /* This would clean up the color state from context */
-    /* For now, just return success */
-    
+    if (ctx->color_state && ctx->color_state_free) {
+        ctx->color_state_free(ctx->color_state);
+        ctx->color_state = NULL;
+        ctx->color_state_free = NULL;
+    }
     return 0;
 }
 
 static TELNETTY_UNUSED int telnetty_color_enable(telnetty_context_t* ctx) {
-    if (!ctx) return -1;
-    
-    /* This would enable color output */
-    /* For now, just return success */
-    
+    telnetty_color_state_t* s = telnetty__color_state(ctx);
+    if (!s) return -1;
+    s->enabled = true;
     return 0;
 }
 
 static TELNETTY_UNUSED int telnetty_color_disable(telnetty_context_t* ctx) {
-    if (!ctx) return -1;
-    
-    /* This would disable color output */
-    /* For now, just return success */
-    
+    telnetty_color_state_t* s = telnetty__color_state(ctx);
+    if (!s) return -1;
+    s->enabled = false;
     return 0;
 }
 
@@ -721,21 +726,16 @@ static int telnetty_color_set_capabilities(
     telnetty_context_t* ctx,
     telnetty_color_cap_t capabilities
 ) {
-    (void)capabilities;
-    if (!ctx) return -1;
-    
-    /* This would set color capabilities */
-    /* For now, just return success */
-    
+    telnetty_color_state_t* s = telnetty__color_state(ctx);
+    if (!s) return -1;
+    s->capabilities = capabilities;
     return 0;
 }
 
 static TELNETTY_UNUSED telnetty_color_cap_t telnetty_color_get_capabilities(telnetty_context_t* ctx) {
     if (!ctx) return TELNETTY_COLOR_CAP_NONE;
-    
-    /* This would get color capabilities from context */
-    /* For now, return ANSI as default */
-    return TELNETTY_COLOR_CAP_ANSI;
+    telnetty_color_state_t* s = (telnetty_color_state_t*)ctx->color_state;
+    return s ? s->capabilities : TELNETTY_COLOR_CAP_ANSI;
 }
 
 static telnetty_color_cap_t telnetty_color_detect_capabilities(
@@ -766,83 +766,93 @@ static telnetty_color_cap_t telnetty_color_detect_capabilities(
  * ANSI Color Implementation
  * ============================================================================ */
 
+/* Emit a raw SGR sequence "\033[<code>m" into the outbound buffer. Used by
+ * every setter below so mutations reach the wire, not just the state. */
+static int telnetty__color_emit(telnetty_context_t* ctx, const char* code) {
+    if (!ctx || !code) return -1;
+    telnetty_color_state_t* s = (telnetty_color_state_t*)ctx->color_state;
+    if (s && !s->enabled) return 0;   /* disabled: silent no-op */
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "\033[%sm", code);
+    if (n < 0 || (size_t)n >= sizeof(buf)) return -1;
+    if (!ctx->out_buffer) return -1;
+    return telnetty_buffer_append(ctx->out_buffer, (const uint8_t*)buf, (size_t)n) < 0 ? -1 : 0;
+}
+
 static int telnetty_color_set_foreground(
     telnetty_context_t* ctx,
     telnetty_ansi_color_t color
 ) {
-    (void)color;
-    if (!ctx) return -1;
-    
-    /* This would set the foreground color */
-    /* For now, just return success */
-    
-    return 0;
+    telnetty_color_state_t* s = telnetty__color_state(ctx);
+    if (!s) return -1;
+    s->foreground = (uint8_t)color;
+    char code[8];
+    int sgr = (color <= 7) ? (30 + (int)color) : (90 + ((int)color - 8));
+    snprintf(code, sizeof(code), "%d", sgr);
+    return telnetty__color_emit(ctx, code);
 }
 
 static int telnetty_color_set_background(
     telnetty_context_t* ctx,
     telnetty_ansi_color_t color
 ) {
-    (void)color;
-    if (!ctx) return -1;
-    
-    /* This would set the background color */
-    /* For now, just return success */
-    
-    return 0;
+    telnetty_color_state_t* s = telnetty__color_state(ctx);
+    if (!s) return -1;
+    s->background = (uint8_t)color;
+    char code[8];
+    int sgr = (color <= 7) ? (40 + (int)color) : (100 + ((int)color - 8));
+    snprintf(code, sizeof(code), "%d", sgr);
+    return telnetty__color_emit(ctx, code);
 }
 
 static int telnetty_color_set_attribute(
     telnetty_context_t* ctx,
     telnetty_color_attr_t attr
 ) {
-    (void)attr;
-    if (!ctx) return -1;
-    
-    /* This would set a text attribute */
-    /* For now, just return success */
-    
-    return 0;
+    telnetty_color_state_t* s = telnetty__color_state(ctx);
+    if (!s) return -1;
+    s->attributes |= (uint32_t)(1u << (unsigned)attr);
+    char code[8];
+    /* Map attribute enum -> SGR code. 1=bold, 3=italic, 4=underline, 5=blink,
+     * 7=reverse, 8=hidden, 9=strikethrough. These match the enum values in
+     * telnetty_color_attr_t, so we can emit the enum value directly. */
+    snprintf(code, sizeof(code), "%d", (int)attr);
+    return telnetty__color_emit(ctx, code);
 }
 
 static TELNETTY_UNUSED int telnetty_color_reset(telnetty_context_t* ctx) {
-    if (!ctx) return -1;
-    
-    /* This would reset all colors and attributes */
-    /* For now, just return success */
-    
-    return 0;
+    telnetty_color_state_t* s = telnetty__color_state(ctx);
+    if (s) {
+        s->foreground = s->background = 0;
+        s->attributes = 0;
+    }
+    return telnetty__color_emit(ctx, "0");
 }
 
 static TELNETTY_UNUSED int telnetty_color_reset_foreground(telnetty_context_t* ctx) {
-    if (!ctx) return -1;
-    
-    /* This would reset the foreground color */
-    /* For now, just return success */
-    
-    return 0;
+    telnetty_color_state_t* s = telnetty__color_state(ctx);
+    if (s) s->foreground = 0;
+    return telnetty__color_emit(ctx, "39");  /* SGR 39 = default fg */
 }
 
 static TELNETTY_UNUSED int telnetty_color_reset_background(telnetty_context_t* ctx) {
-    if (!ctx) return -1;
-    
-    /* This would reset the background color */
-    /* For now, just return success */
-    
-    return 0;
+    telnetty_color_state_t* s = telnetty__color_state(ctx);
+    if (s) s->background = 0;
+    return telnetty__color_emit(ctx, "49");  /* SGR 49 = default bg */
 }
 
 static int telnetty_color_clear_attribute(
     telnetty_context_t* ctx,
     telnetty_color_attr_t attr
 ) {
-    (void)attr;
-    if (!ctx) return -1;
-    
-    /* This would clear a text attribute */
-    /* For now, just return success */
-    
-    return 0;
+    telnetty_color_state_t* s = telnetty__color_state(ctx);
+    if (!s) return -1;
+    s->attributes &= ~(uint32_t)(1u << (unsigned)attr);
+    /* SGR 20 + attr — 22=normal intensity, 23=not italic, 24=not underline,
+     * 25=not blink, 27=not reverse, 28=not hidden, 29=not strikethrough. */
+    char code[8];
+    snprintf(code, sizeof(code), "%d", 20 + (int)attr);
+    return telnetty__color_emit(ctx, code);
 }
 
 /* ============================================================================
@@ -853,45 +863,66 @@ static int telnetty_color_set_foreground_256(
     telnetty_context_t* ctx,
     uint8_t color
 ) {
-    (void)color;
-    if (!ctx) return -1;
-    
-    /* This would set 256-color foreground */
-    /* For now, just return success */
-    
-    return 0;
+    telnetty_color_state_t* s = telnetty__color_state(ctx);
+    if (!s) return -1;
+    s->foreground = color;
+    char code[16];
+    snprintf(code, sizeof(code), "38;5;%u", (unsigned)color);
+    return telnetty__color_emit(ctx, code);
 }
 
 static int telnetty_color_set_background_256(
     telnetty_context_t* ctx,
     uint8_t color
 ) {
-    (void)color;
-    if (!ctx) return -1;
-    
-    /* This would set 256-color background */
-    /* For now, just return success */
-    
-    return 0;
+    telnetty_color_state_t* s = telnetty__color_state(ctx);
+    if (!s) return -1;
+    s->background = color;
+    char code[16];
+    snprintf(code, sizeof(code), "48;5;%u", (unsigned)color);
+    return telnetty__color_emit(ctx, code);
 }
 
+/* Nearest-match RGB → xterm 256-color index. Uses the xterm cube stops
+ * {0, 95, 135, 175, 215, 255} rather than the old naive `(c-48)/40`
+ * bucketing, which mis-routed colors near cube boundaries. Falls back to
+ * the 24-step grayscale ramp when R≈G≈B. */
 static TELNETTY_UNUSED uint8_t telnetty_color_rgb_to_256(uint8_t r, uint8_t g, uint8_t b) {
-    /* Convert RGB to 256-color index */
-    /* This is a simplified implementation */
-    
-    if (r == g && g == b) {
-        /* Grayscale */
-        if (r < 8) return 16;
-        if (r > 248) return 231;
-        return 232 + (r - 8) / 10;
+    static const uint8_t stops[6] = { 0, 95, 135, 175, 215, 255 };
+    /* Nearest stop for each channel. */
+    int idx[3] = { 0, 0, 0 };
+    int val[3] = { 0, 0, 0 };
+    uint8_t input[3] = { r, g, b };
+    for (int c = 0; c < 3; c++) {
+        int best = 0;
+        int best_d = 256 * 256;
+        for (int i = 0; i < 6; i++) {
+            int d = (int)input[c] - (int)stops[i];
+            d *= d;
+            if (d < best_d) { best_d = d; best = i; }
+        }
+        idx[c] = best;
+        val[c] = stops[best];
     }
-    
-    /* Color cube */
-    int r_index = (r >= 48) ? ((r - 48) / 40) : 0;
-    int g_index = (g >= 48) ? ((g - 48) / 40) : 0;
-    int b_index = (b >= 48) ? ((b - 48) / 40) : 0;
-    
-    return 16 + (r_index * 36) + (g_index * 6) + b_index;
+    int cube = 16 + 36 * idx[0] + 6 * idx[1] + idx[2];
+
+    /* Compare against the grayscale ramp (24 steps, 8..238 stride 10). */
+    int gray_lum = (int)r + (int)g + (int)b;
+    int gray_i = -1, gray_v = 0;
+    /* Consider average close to grayscale, else pick cube. */
+    if ((int)r == (int)g && (int)g == (int)b) {
+        int avg = gray_lum / 3;
+        if (avg < 8) return 16;
+        if (avg > 238) return 231;
+        gray_i = (avg - 8) / 10;
+        gray_v = 8 + gray_i * 10;
+        int d_gray = 3 * (avg - gray_v) * (avg - gray_v);
+        int d_cube = ((int)r - val[0]) * ((int)r - val[0])
+                   + ((int)g - val[1]) * ((int)g - val[1])
+                   + ((int)b - val[2]) * ((int)b - val[2]);
+        return d_gray <= d_cube ? (uint8_t)(232 + gray_i) : (uint8_t)cube;
+    }
+    return (uint8_t)cube;
 }
 
 static TELNETTY_UNUSED telnetty_rgb_color_t telnetty_color_256_to_rgb(uint8_t index) {
@@ -950,15 +981,11 @@ static int telnetty_color_set_foreground_rgb(
     uint8_t g,
     uint8_t b
 ) {
-    (void)r;
-    (void)g;
-    (void)b;
-    if (!ctx) return -1;
-    
-    /* This would set true color foreground */
-    /* For now, just return success */
-    
-    return 0;
+    if (!telnetty__color_state(ctx)) return -1;
+    char code[32];
+    snprintf(code, sizeof(code), "38;2;%u;%u;%u",
+             (unsigned)r, (unsigned)g, (unsigned)b);
+    return telnetty__color_emit(ctx, code);
 }
 
 static int telnetty_color_set_background_rgb(
@@ -967,15 +994,11 @@ static int telnetty_color_set_background_rgb(
     uint8_t g,
     uint8_t b
 ) {
-    (void)r;
-    (void)g;
-    (void)b;
-    if (!ctx) return -1;
-    
-    /* This would set true color background */
-    /* For now, just return success */
-    
-    return 0;
+    if (!telnetty__color_state(ctx)) return -1;
+    char code[32];
+    snprintf(code, sizeof(code), "48;2;%u;%u;%u",
+             (unsigned)r, (unsigned)g, (unsigned)b);
+    return telnetty__color_emit(ctx, code);
 }
 
 static int telnetty_color_set_foreground_color(
@@ -1000,6 +1023,29 @@ static int telnetty_color_set_background_color(
  * Color String Implementation
  * ============================================================================ */
 
+/* Bounded printf helper: append into buffer[*offset..buffer_size). Returns
+ * 0 on success, -1 on truncation or error. Never advances *offset past the
+ * buffer; never wraps size_t underneath the caller. */
+static int telnetty__color_appendf(char* buffer, size_t buffer_size, size_t* offset,
+                                   const char* fmt, ...) {
+    if (!buffer || !offset || *offset >= buffer_size) return -1;
+    size_t remaining = buffer_size - *offset;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buffer + *offset, remaining, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= remaining) return -1;
+    *offset += (size_t)n;
+    return 0;
+}
+
+/* Append a single literal byte with the same overflow contract. */
+static int telnetty__color_appendc(char* buffer, size_t buffer_size, size_t* offset, char c) {
+    if (!buffer || !offset || *offset + 1 >= buffer_size) return -1;
+    buffer[(*offset)++] = c;
+    return 0;
+}
+
 static int telnetty_color_string_ansi(
     telnetty_context_t* ctx,
     telnetty_ansi_color_t fg,
@@ -1008,54 +1054,46 @@ static int telnetty_color_string_ansi(
     char* buffer,
     size_t buffer_size
 ) {
-    if (!ctx || !buffer) return -1;
-    
-    /* Build ANSI color string */
+    if (!ctx || !buffer || buffer_size == 0) return -1;
+
     size_t offset = 0;
-    
-    /* Start escape sequence */
-    offset += snprintf(buffer + offset, buffer_size - offset, "\033[");
-    
-    /* Add attributes */
+    if (telnetty__color_appendf(buffer, buffer_size, &offset, "\033[") < 0) return -1;
+
     bool first = true;
-    if (attrs & (1 << TELNETTY_ATTR_BOLD)) {
-        offset += snprintf(buffer + offset, buffer_size - offset, "1");
+    if (attrs & (1u << TELNETTY_ATTR_BOLD)) {
+        if (telnetty__color_appendf(buffer, buffer_size, &offset, "1") < 0) return -1;
         first = false;
     }
-    if (attrs & (1 << TELNETTY_ATTR_ITALIC)) {
-        if (!first) buffer[offset++] = ';';
-        offset += snprintf(buffer + offset, buffer_size - offset, "3");
+    if (attrs & (1u << TELNETTY_ATTR_ITALIC)) {
+        if (!first && telnetty__color_appendc(buffer, buffer_size, &offset, ';') < 0) return -1;
+        if (telnetty__color_appendf(buffer, buffer_size, &offset, "3") < 0) return -1;
         first = false;
     }
-    if (attrs & (1 << TELNETTY_ATTR_UNDERLINE)) {
-        if (!first) buffer[offset++] = ';';
-        offset += snprintf(buffer + offset, buffer_size - offset, "4");
+    if (attrs & (1u << TELNETTY_ATTR_UNDERLINE)) {
+        if (!first && telnetty__color_appendc(buffer, buffer_size, &offset, ';') < 0) return -1;
+        if (telnetty__color_appendf(buffer, buffer_size, &offset, "4") < 0) return -1;
         first = false;
     }
-    
-    /* Add foreground color */
+
     if (fg <= 7) {
-        if (!first) buffer[offset++] = ';';
-        offset += snprintf(buffer + offset, buffer_size - offset, "%d", 30 + fg);
+        if (!first && telnetty__color_appendc(buffer, buffer_size, &offset, ';') < 0) return -1;
+        if (telnetty__color_appendf(buffer, buffer_size, &offset, "%d", 30 + fg) < 0) return -1;
         first = false;
     } else if (fg <= 15) {
-        if (!first) buffer[offset++] = ';';
-        offset += snprintf(buffer + offset, buffer_size - offset, "%d", 90 + (fg - 8));
+        if (!first && telnetty__color_appendc(buffer, buffer_size, &offset, ';') < 0) return -1;
+        if (telnetty__color_appendf(buffer, buffer_size, &offset, "%d", 90 + (fg - 8)) < 0) return -1;
         first = false;
     }
-    
-    /* Add background color */
+
     if (bg <= 7) {
-        if (!first) buffer[offset++] = ';';
-        offset += snprintf(buffer + offset, buffer_size - offset, "%d", 40 + bg);
+        if (!first && telnetty__color_appendc(buffer, buffer_size, &offset, ';') < 0) return -1;
+        if (telnetty__color_appendf(buffer, buffer_size, &offset, "%d", 40 + bg) < 0) return -1;
     } else if (bg <= 15) {
-        if (!first) buffer[offset++] = ';';
-        offset += snprintf(buffer + offset, buffer_size - offset, "%d", 100 + (bg - 8));
+        if (!first && telnetty__color_appendc(buffer, buffer_size, &offset, ';') < 0) return -1;
+        if (telnetty__color_appendf(buffer, buffer_size, &offset, "%d", 100 + (bg - 8)) < 0) return -1;
     }
-    
-    /* End escape sequence */
-    offset += snprintf(buffer + offset, buffer_size - offset, "m");
-    
+
+    if (telnetty__color_appendf(buffer, buffer_size, &offset, "m") < 0) return -1;
     return (int)offset;
 }
 
@@ -1066,25 +1104,15 @@ static int telnetty_color_string_256(
     char* buffer,
     size_t buffer_size
 ) {
-    if (!ctx || !buffer) return -1;
-    
-    /* Build 256-color string */
+    if (!ctx || !buffer || buffer_size == 0) return -1;
+
     size_t offset = 0;
-    
-    /* Start escape sequence */
-    offset += snprintf(buffer + offset, buffer_size - offset, "\033[");
-    
-    /* Add foreground color */
-    offset += snprintf(buffer + offset, buffer_size - offset, "38;5;%d", fg);
-    
-    /* Add background color */
-    if (bg <= 255) {
-        offset += snprintf(buffer + offset, buffer_size - offset, ";48;5;%d", bg);
-    }
-    
-    /* End escape sequence */
-    offset += snprintf(buffer + offset, buffer_size - offset, "m");
-    
+    if (telnetty__color_appendf(buffer, buffer_size, &offset, "\033[38;5;%u", (unsigned)fg) < 0)
+        return -1;
+    /* bg is uint8_t so it can never exceed 255; drop the always-true check. */
+    if (telnetty__color_appendf(buffer, buffer_size, &offset, ";48;5;%u", (unsigned)bg) < 0)
+        return -1;
+    if (telnetty__color_appendf(buffer, buffer_size, &offset, "m") < 0) return -1;
     return (int)offset;
 }
 
@@ -1095,30 +1123,23 @@ static int telnetty_color_string_true(
     char* buffer,
     size_t buffer_size
 ) {
-    if (!ctx || !buffer) return -1;
-    
-    /* Build true color string */
+    if (!ctx || !buffer || buffer_size == 0) return -1;
+
     size_t offset = 0;
-    
-    /* Start escape sequence */
-    offset += snprintf(buffer + offset, buffer_size - offset, "\033[");
-    
-    /* Add foreground color */
+    if (telnetty__color_appendf(buffer, buffer_size, &offset, "\033[") < 0) return -1;
+
     if (fg) {
-        offset += snprintf(buffer + offset, buffer_size - offset, 
-            "38;2;%d;%d;%d", fg->r, fg->g, fg->b);
+        if (telnetty__color_appendf(buffer, buffer_size, &offset,
+                                    "38;2;%d;%d;%d", fg->r, fg->g, fg->b) < 0)
+            return -1;
     }
-    
-    /* Add background color */
     if (bg) {
-        if (fg) buffer[offset++] = ';';
-        offset += snprintf(buffer + offset, buffer_size - offset, 
-            "48;2;%d;%d;%d", bg->r, bg->g, bg->b);
+        if (fg && telnetty__color_appendc(buffer, buffer_size, &offset, ';') < 0) return -1;
+        if (telnetty__color_appendf(buffer, buffer_size, &offset,
+                                    "48;2;%d;%d;%d", bg->r, bg->g, bg->b) < 0)
+            return -1;
     }
-    
-    /* End escape sequence */
-    offset += snprintf(buffer + offset, buffer_size - offset, "m");
-    
+    if (telnetty__color_appendf(buffer, buffer_size, &offset, "m") < 0) return -1;
     return (int)offset;
 }
 
@@ -1289,11 +1310,22 @@ static int telnetty_color_get_state(
     telnetty_color_state_t* state
 ) {
     if (!ctx || !state) return -1;
-    
-    /* This would get color state from context */
-    /* For now, return default state */
-    memset(state, 0, sizeof(telnetty_color_state_t));
-    
+    telnetty_color_state_t* s = (telnetty_color_state_t*)ctx->color_state;
+    if (!s) {
+        memset(state, 0, sizeof(*state));
+        return -1;
+    }
+    /* Copy scalar fields only; the internal `buffer` pointer stays with
+     * the context so the caller does not accidentally free it. */
+    state->capabilities = s->capabilities;
+    state->foreground   = s->foreground;
+    state->background   = s->background;
+    state->attributes   = s->attributes;
+    state->enabled      = s->enabled;
+    state->auto_detect  = s->auto_detect;
+    state->buffer       = NULL;
+    state->buffer_size  = 0;
+    state->buffer_pos   = 0;
     return 0;
 }
 
@@ -1302,19 +1334,26 @@ static int telnetty_color_set_state(
     const telnetty_color_state_t* state
 ) {
     if (!ctx || !state) return -1;
-    
-    /* This would set color state in context */
-    /* For now, just return success */
-    
+    telnetty_color_state_t* s = telnetty__color_state(ctx);
+    if (!s) return -1;
+    s->capabilities = state->capabilities;
+    s->foreground   = state->foreground;
+    s->background   = state->background;
+    s->attributes   = state->attributes;
+    s->enabled      = state->enabled;
+    s->auto_detect  = state->auto_detect;
+    /* buffer / buffer_size / buffer_pos intentionally not copied — those
+     * are the internal scratch owned by ctx->color_state. */
     return 0;
 }
 
 static TELNETTY_UNUSED int telnetty_color_flush(telnetty_context_t* ctx) {
     if (!ctx) return -1;
-    
-    /* This would flush the color buffer */
-    /* For now, just return success */
-    
+    telnetty_color_state_t* s = (telnetty_color_state_t*)ctx->color_state;
+    if (!s) return 0;
+    /* Reset the internal color-code scratch buffer used by the append helpers. */
+    s->buffer_pos = 0;
+    if (s->buffer && s->buffer_size > 0) s->buffer[0] = '\0';
     return 0;
 }
 

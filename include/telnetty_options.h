@@ -919,16 +919,46 @@ static void telnetty_charset_sb_handler(
     uint8_t sub = data[0];
     if (sub == TELNETTY_CHARSET_ACCEPTED && length >= 2) {
         size_t n = length - 1;
-        char* sel = (char*)TELNETTY_OPTIONS_MALLOC(n + 1);
-        if (sel) {
-            memcpy(sel, data + 1, n);
-            sel[n] = '\0';
-            if (cd->selected_charset)
-                TELNETTY_OPTIONS_FREE(cd->selected_charset);
-            cd->selected_charset = sel;
+        /* Validate the peer's chosen charset is one we actually offered.
+         * A malicious peer could otherwise store any string into
+         * cd->selected_charset which telnetty_get_charset() returns. */
+        int accepted = 0;
+        if (cd->supported_charsets && cd->charset_count > 0) {
+            for (size_t i = 0; i < cd->charset_count; i++) {
+                const char* s = cd->supported_charsets[i];
+                if (s && strlen(s) == n && memcmp(s, data + 1, n) == 0) {
+                    accepted = 1;
+                    break;
+                }
+            }
+        } else {
+            /* No offered list means we accept any peer selection. */
+            accepted = 1;
         }
-        cd->negotiation_complete = true;
-        cd->request_sent = true;
+        if (accepted) {
+            char* sel = (char*)TELNETTY_OPTIONS_MALLOC(n + 1);
+            if (sel) {
+                memcpy(sel, data + 1, n);
+                sel[n] = '\0';
+                if (cd->selected_charset)
+                    TELNETTY_OPTIONS_FREE(cd->selected_charset);
+                cd->selected_charset = sel;
+            }
+            cd->negotiation_complete = true;
+            cd->request_sent = true;
+        } else {
+            telnetty_report_error(ctx, TELNETTY_ERR_CHARSET_UNSUPPORTED,
+                                  "Peer ACCEPTED an unoffered charset");
+        }
+    } else if (sub == TELNETTY_CHARSET_TTABLE_IS
+            || sub == TELNETTY_CHARSET_TTABLE_REJECTED
+            || sub == TELNETTY_CHARSET_TTABLE_ACK
+            || sub == TELNETTY_CHARSET_TTABLE_NAK) {
+        /* We do not implement translation tables (RFC 2066 §3.2). Reply
+         * with TTABLE-REJECTED so the peer stops offering them; without
+         * this the peer sees silence and may retry indefinitely. */
+        uint8_t rej = TELNETTY_CHARSET_TTABLE_REJECTED;
+        telnetty_send_subnegotiation(ctx, TELNETTY_TELOPT_CHARSET, &rej, 1);
     } else if (sub == TELNETTY_CHARSET_REQUEST) {
         /* Peer requests a charset — accept UTF-8 once. */
         if (!cd->negotiation_complete) {
@@ -1020,18 +1050,200 @@ static TELNETTY_UNUSED const char* telnetty_get_charset(telnetty_context_t* ctx)
 
 static TELNETTY_UNUSED int telnetty_enable_eor(telnetty_context_t* ctx) {
     if (!ctx) return -1;
-    
-    /* Register option handler */
-    telnetty_option_tracker_t* tracker = telnetty_option_tracker_create(
-        TELNETTY_TELOPT_EOR,
-        NULL, /* No special handler needed */
-        NULL
-    );
-    
-    if (!tracker) return -1;
-    
-    /* Send WILL to enable EOR */
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_EOR, 1, 1);
     return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_EOR);
+}
+
+/* ============================================================================
+ * STATUS (RFC 859), TM (RFC 860), TSPEED (RFC 1079),
+ * LFLOW (RFC 1372), LINEMODE (RFC 1184) — the options the README names.
+ * SLC/FORWARDMASK are accepted and stored; we do not edit the client's
+ * special-character table.
+ * ============================================================================ */
+
+#define TELNETTY_STATUS_IS   0
+#define TELNETTY_STATUS_SEND 1
+#define TELNETTY_TSPEED_IS   0
+#define TELNETTY_TSPEED_SEND 1
+#define TELNETTY_LFLOW_OFF   0
+#define TELNETTY_LFLOW_ON    1
+#define TELNETTY_LFLOW_RESTART_ANY 2
+#define TELNETTY_LFLOW_RESTART_XON 3
+#define TELNETTY_LM_MODE     1
+#define TELNETTY_LM_FORWARDMASK 2
+#define TELNETTY_LM_SLC      3
+
+typedef struct {
+    char tx[32];
+    char rx[32];
+    int have;
+} telnetty_tspeed_data_t;
+
+typedef struct {
+    int last;          /* last LFLOW command byte, or -1 */
+} telnetty_lflow_data_t;
+
+typedef struct {
+    int mode;          /* LINEMODE MODE byte, or -1 */
+    uint8_t slc[32];   /* last SLC payload, truncated */
+    size_t slc_len;
+} telnetty_linemode_data_t;
+
+static void telnetty_tspeed_free(void* p) { TELNETTY_OPTIONS_FREE(p); }
+static void telnetty_lflow_free(void* p) { TELNETTY_OPTIONS_FREE(p); }
+static void telnetty_linemode_free(void* p) { TELNETTY_OPTIONS_FREE(p); }
+
+static void telnetty_status_sb(
+    telnetty_context_t* ctx, uint8_t option,
+    const uint8_t* data, size_t length, void* user_data
+) {
+    (void)option; (void)user_data;
+    if (!ctx || length < 1 || data[0] != TELNETTY_STATUS_SEND) return;
+    uint8_t reply[3 + 256 * 2];
+    size_t n = 0;
+    reply[n++] = TELNETTY_STATUS_IS;
+    for (int i = 0; i < 256 && n + 2 < sizeof(reply); i++) {
+        telnetty_option_t* opt = ctx->options[i];
+        if (!opt) continue;
+        if (opt->us == TELNETTY_Q_YES) {
+            reply[n++] = TELNETTY_WILL;
+            reply[n++] = (uint8_t)i;
+        }
+        if (opt->him == TELNETTY_Q_YES) {
+            reply[n++] = TELNETTY_DO;
+            reply[n++] = (uint8_t)i;
+        }
+    }
+    telnetty_send_subnegotiation(ctx, TELNETTY_TELOPT_STATUS, reply, n);
+}
+
+static TELNETTY_UNUSED int telnetty_enable_status(telnetty_context_t* ctx) {
+    if (!ctx) return -1;
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_STATUS, 1, 1);
+    telnetty_register_sb_handler(ctx, TELNETTY_TELOPT_STATUS, telnetty_status_sb, NULL);
+    return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_STATUS);
+}
+
+static TELNETTY_UNUSED int telnetty_send_timing_mark(telnetty_context_t* ctx) {
+    if (!ctx) return -1;
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_TM, 1, 1);
+    return telnetty_send_option(ctx, TELNETTY_DO, TELNETTY_TELOPT_TM);
+}
+
+static TELNETTY_UNUSED int telnetty_enable_timing_mark(telnetty_context_t* ctx) {
+    if (!ctx) return -1;
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_TM, 1, 1);
+    return 0;
+}
+
+static void telnetty_tspeed_sb(
+    telnetty_context_t* ctx, uint8_t option,
+    const uint8_t* data, size_t length, void* user_data
+) {
+    (void)ctx; (void)option;
+    telnetty_tspeed_data_t* td = (telnetty_tspeed_data_t*)user_data;
+    if (!td || length < 2 || data[0] != TELNETTY_TSPEED_IS) return;
+    const char* s = (const char*)(data + 1);
+    size_t n = length - 1;
+    const char* comma = memchr(s, ',', n);
+    size_t tx_n = comma ? (size_t)(comma - s) : n;
+    size_t rx_n = comma ? n - tx_n - 1 : 0;
+    if (tx_n >= sizeof(td->tx)) tx_n = sizeof(td->tx) - 1;
+    if (rx_n >= sizeof(td->rx)) rx_n = sizeof(td->rx) - 1;
+    memcpy(td->tx, s, tx_n);
+    td->tx[tx_n] = '\0';
+    if (comma) {
+        memcpy(td->rx, comma + 1, rx_n);
+        td->rx[rx_n] = '\0';
+    } else {
+        td->rx[0] = '\0';
+    }
+    td->have = 1;
+}
+
+static TELNETTY_UNUSED int telnetty_enable_tspeed(telnetty_context_t* ctx) {
+    if (!ctx) return -1;
+    telnetty_tspeed_data_t* td = (telnetty_tspeed_data_t*)TELNETTY_OPTIONS_MALLOC(sizeof(*td));
+    if (!td) return -1;
+    memset(td, 0, sizeof(*td));
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_TERM_SPEED, 0, 1);
+    telnetty_register_sb_handler(ctx, TELNETTY_TELOPT_TERM_SPEED, telnetty_tspeed_sb, NULL);
+    telnetty_option_set_user_data(ctx, TELNETTY_TELOPT_TERM_SPEED, td, telnetty_tspeed_free);
+    return telnetty_send_option(ctx, TELNETTY_DO, TELNETTY_TELOPT_TERM_SPEED);
+}
+
+static TELNETTY_UNUSED int telnetty_get_term_speed(telnetty_context_t* ctx, const char** tx, const char** rx) {
+    if (!ctx) return -1;
+    telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_TERM_SPEED];
+    telnetty_tspeed_data_t* td = (opt && opt->user_data) ? (telnetty_tspeed_data_t*)opt->user_data : NULL;
+    if (!td || !td->have) return -1;
+    if (tx) *tx = td->tx;
+    if (rx) *rx = td->rx;
+    return 0;
+}
+
+static void telnetty_lflow_sb(
+    telnetty_context_t* ctx, uint8_t option,
+    const uint8_t* data, size_t length, void* user_data
+) {
+    (void)ctx; (void)option;
+    telnetty_lflow_data_t* fd = (telnetty_lflow_data_t*)user_data;
+    if (!fd || length < 1) return;
+    fd->last = data[0];
+}
+
+static TELNETTY_UNUSED int telnetty_enable_lflow(telnetty_context_t* ctx) {
+    if (!ctx) return -1;
+    telnetty_lflow_data_t* fd = (telnetty_lflow_data_t*)TELNETTY_OPTIONS_MALLOC(sizeof(*fd));
+    if (!fd) return -1;
+    fd->last = -1;
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_REMOTE_FLOW, 1, 1);
+    telnetty_register_sb_handler(ctx, TELNETTY_TELOPT_REMOTE_FLOW, telnetty_lflow_sb, NULL);
+    telnetty_option_set_user_data(ctx, TELNETTY_TELOPT_REMOTE_FLOW, fd, telnetty_lflow_free);
+    return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_REMOTE_FLOW);
+}
+
+static TELNETTY_UNUSED int telnetty_get_flow(telnetty_context_t* ctx) {
+    if (!ctx) return -1;
+    telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_REMOTE_FLOW];
+    telnetty_lflow_data_t* fd = (opt && opt->user_data) ? (telnetty_lflow_data_t*)opt->user_data : NULL;
+    return fd ? fd->last : -1;
+}
+
+static void telnetty_linemode_sb(
+    telnetty_context_t* ctx, uint8_t option,
+    const uint8_t* data, size_t length, void* user_data
+) {
+    (void)ctx; (void)option;
+    telnetty_linemode_data_t* lm = (telnetty_linemode_data_t*)user_data;
+    if (!lm || length < 1) return;
+    if (data[0] == TELNETTY_LM_MODE && length >= 2)
+        lm->mode = data[1];
+    else if (data[0] == TELNETTY_LM_SLC) {
+        size_t n = length - 1;
+        if (n > sizeof(lm->slc)) n = sizeof(lm->slc);
+        memcpy(lm->slc, data + 1, n);
+        lm->slc_len = n;
+    }
+}
+
+static TELNETTY_UNUSED int telnetty_enable_linemode(telnetty_context_t* ctx) {
+    if (!ctx) return -1;
+    telnetty_linemode_data_t* lm = (telnetty_linemode_data_t*)TELNETTY_OPTIONS_MALLOC(sizeof(*lm));
+    if (!lm) return -1;
+    memset(lm, 0, sizeof(*lm));
+    lm->mode = -1;
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_LINEMODE, 1, 1);
+    telnetty_register_sb_handler(ctx, TELNETTY_TELOPT_LINEMODE, telnetty_linemode_sb, NULL);
+    telnetty_option_set_user_data(ctx, TELNETTY_TELOPT_LINEMODE, lm, telnetty_linemode_free);
+    return telnetty_send_option(ctx, TELNETTY_DO, TELNETTY_TELOPT_LINEMODE);
+}
+
+static TELNETTY_UNUSED int telnetty_get_linemode(telnetty_context_t* ctx) {
+    if (!ctx) return -1;
+    telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_LINEMODE];
+    telnetty_linemode_data_t* lm = (opt && opt->user_data) ? (telnetty_linemode_data_t*)opt->user_data : NULL;
+    return lm ? lm->mode : -1;
 }
 
 static TELNETTY_UNUSED int telnetty_send_eor(telnetty_context_t* ctx) {
@@ -1057,6 +1269,10 @@ static TELNETTY_UNUSED int telnetty_enable_all_options(telnetty_context_t* ctx) 
     if (telnetty_enable_eor(ctx) == 0) enabled++;
     if (telnetty_enable_naws(ctx) == 0) enabled++;
     if (telnetty_enable_environ(ctx) == 0) enabled++;
+    if (telnetty_enable_status(ctx) == 0) enabled++;
+    if (telnetty_enable_timing_mark(ctx) == 0) enabled++;
+    if (telnetty_enable_tspeed(ctx) == 0) enabled++;
+    if (telnetty_enable_lflow(ctx) == 0) enabled++;
     
     return enabled;
 }
@@ -1084,9 +1300,9 @@ static int telnetty_wait_for_option(
     (void)timeout_ms;
     if (!ctx) return -1;
     
-    /* This would need to be integrated with the option tracker system */
-    /* For now, return success */
-    return 0;
+    telnetty_option_t* opt = ctx->options[option];
+    if (!opt) return 0;
+    return (opt->us == TELNETTY_Q_YES || opt->him == TELNETTY_Q_YES) ? 1 : 0;
 }
 
 /* ============================================================================
