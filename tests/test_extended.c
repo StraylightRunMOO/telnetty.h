@@ -1359,6 +1359,114 @@ static void test_starttls_signaling(void) {
     telnetty_destroy(ctx);
 }
 
+/* ----- ATCP (TELOPT 200) round-trip + MCP no-longer-negotiates ----- */
+
+static int   atcp_calls = 0;
+static char  atcp_pkg[64];
+static char  atcp_msg[64];
+static char  atcp_payload[128];
+static size_t atcp_payload_len = 0;
+
+static void atcp_cb(telnetty_context_t* ctx, const char* pkg,
+                    const char* msg, const uint8_t* payload,
+                    size_t payload_len, void* ud) {
+    (void)ctx; (void)ud;
+    atcp_calls++;
+    snprintf(atcp_pkg, sizeof(atcp_pkg), "%s", pkg ? pkg : "");
+    snprintf(atcp_msg, sizeof(atcp_msg), "%s", msg ? msg : "");
+    size_t take = payload_len < sizeof(atcp_payload) - 1
+                ? payload_len : sizeof(atcp_payload) - 1;
+    if (payload && take) memcpy(atcp_payload, payload, take);
+    atcp_payload[take] = '\0';
+    atcp_payload_len = take;
+}
+
+static void test_atcp_roundtrip(void) {
+    atcp_calls = 0;
+    atcp_payload_len = 0;
+    telnetty_context_t* ctx = telnetty_create(NULL, NULL);
+    OK(telnetty_enable_atcp(ctx, atcp_cb, NULL) == 0, "atcp: enable");
+
+    /* Peer accepts + sends "Char.Vitals hp=100 mp=80". */
+    const uint8_t peer_do[] = { TELNETTY_IAC, TELNETTY_DO, TELNETTY_TELOPT_ATCP };
+    telnetty_process(ctx, peer_do, sizeof(peer_do));
+
+    const uint8_t frame[] = {
+        TELNETTY_IAC, TELNETTY_SB, TELNETTY_TELOPT_ATCP,
+        'C','h','a','r','.','V','i','t','a','l','s',' ',
+        'h','p','=','1','0','0',' ','m','p','=','8','0',
+        TELNETTY_IAC, TELNETTY_SE
+    };
+    telnetty_process(ctx, frame, sizeof(frame));
+
+    OK(atcp_calls == 1, "atcp: dispatched once");
+    OK(strcmp(atcp_pkg, "Char") == 0, "atcp: package = Char");
+    OK(strcmp(atcp_msg, "Vitals") == 0, "atcp: message = Vitals");
+    OK(atcp_payload_len == 12 && strcmp(atcp_payload, "hp=100 mp=80") == 0,
+       "atcp: payload preserved");
+
+    /* Send: verify wire shape "IAC SB 200 Room.Info <payload> IAC SE". */
+    telnetty_buffer_reset(ctx->out_buffer);
+    const char* p = "id=42 name=Alcove";
+    OK(telnetty_atcp_send(ctx, "Room", "Info",
+                          (const uint8_t*)p, strlen(p)) == 0,
+       "atcp: send returns 0");
+    const uint8_t* w = ctx->out_buffer->data;
+    size_t wl = ctx->out_buffer->length;
+    int found = 0;
+    for (size_t i = 0; i + 5 <= wl; i++) {
+        if (w[i]==TELNETTY_IAC && w[i+1]==TELNETTY_SB &&
+            w[i+2]==TELNETTY_TELOPT_ATCP &&
+            w[i+3]=='R' && w[i+4]=='o') { found = 1; break; }
+    }
+    OK(found, "atcp: SB header + package start on wire");
+
+    /* Message-only, no payload. */
+    atcp_calls = 0;
+    const uint8_t bare[] = {
+        TELNETTY_IAC, TELNETTY_SB, TELNETTY_TELOPT_ATCP,
+        'C','o','r','e','.','P','i','n','g',
+        TELNETTY_IAC, TELNETTY_SE
+    };
+    telnetty_process(ctx, bare, sizeof(bare));
+    OK(atcp_calls == 1 && strcmp(atcp_pkg, "Core") == 0 &&
+       strcmp(atcp_msg, "Ping") == 0 && atcp_payload_len == 0,
+       "atcp: bare Core.Ping dispatched");
+
+    telnetty_destroy(ctx);
+}
+
+static void test_mcp_does_not_negotiate_on_wire(void) {
+    /* Regression: enable_mcp historically sent IAC WILL 200 on the wire,
+     * colliding with ATCP. After the collision fix, enable_mcp must
+     * produce zero bytes for the option-negotiation on TELOPT 200. */
+    telnetty_context_t* ctx = telnetty_create(NULL, NULL);
+    telnetty_buffer_reset(ctx->out_buffer);
+
+    OK(telnetty_enable_mcp(ctx, false, TELNETTY_MCP_AUTH_KEY, NULL) == 0,
+       "mcp-no-neg: enable");
+
+    /* Scan out_buffer for IAC WILL 200. Must not appear. */
+    const uint8_t* w = ctx->out_buffer->data;
+    size_t wl = ctx->out_buffer->length;
+    int found_will_200 = 0;
+    for (size_t i = 0; i + 3 <= wl; i++) {
+        if (w[i]==TELNETTY_IAC && w[i+1]==TELNETTY_WILL && w[i+2]==200) {
+            found_will_200 = 1; break;
+        }
+    }
+    OK(!found_will_200, "mcp-no-neg: no IAC WILL 200 on wire");
+
+    /* But MCP state is still attached at the bookkeeping slot. */
+    OK(ctx->options[TELNETTY_MCP_STATE_TELOPT] != NULL,
+       "mcp-no-neg: state slot populated");
+    OK(TELNETTY_MCP_STATE_TELOPT == 207, "mcp-no-neg: state slot is 207");
+    OK(TELNETTY_TELOPT_MCP == TELNETTY_MCP_STATE_TELOPT,
+       "mcp-no-neg: deprecated alias points to state slot");
+
+    telnetty_destroy(ctx);
+}
+
 int main(void) {
     printf("--- Telnetty Extended-Surface Tests ---\n");
     test_version_macros();
@@ -1399,6 +1507,8 @@ int main(void) {
     test_osc8_link();
     test_osc_query();
     test_starttls_signaling();
+    test_atcp_roundtrip();
+    test_mcp_does_not_negotiate_on_wire();
 
     printf("\nPassed: %d\nFailed: %d\n", passed, failed);
     return failed == 0 ? 0 : 1;

@@ -44,8 +44,20 @@ extern "C" {
  * MCP 2.1 Constants
  * ============================================================================ */
 
-/* MCP 2.1 option code (uses private option space) */
-#define TELNETTY_TELOPT_MCP 200
+/* MCP 2.1 is an IN-BAND protocol keyed on the "#$#" line prefix — it does
+ * not have a TELNET option code, contrary to what several C libraries have
+ * historically claimed. We still need a `telnetty_option_t*` slot to hang
+ * MCP's per-context state on so the standard option-freer path can clean
+ * it up on destroy; TELNETTY_MCP_STATE_TELOPT (207, previously unassigned
+ * in the MUD range) is a bookkeeping-only code — we never send WILL/DO/
+ * WONT/DONT for it on the wire.
+ *
+ * Historical note: prior 1.1 releases used TELOPT 200 for this bookkeeping,
+ * which collided with ATCP (which really is TELOPT 200; see telnetty_mud.h).
+ * TELNETTY_TELOPT_MCP is retained as a deprecated alias for source
+ * compatibility — it now equals TELNETTY_MCP_STATE_TELOPT, not 200. */
+#define TELNETTY_MCP_STATE_TELOPT 207
+#define TELNETTY_TELOPT_MCP TELNETTY_MCP_STATE_TELOPT  /* deprecated alias */
 
 /* MCP message types */
 typedef enum {
@@ -764,11 +776,16 @@ static int telnetty_enable_mcp(
         }
     }
     
-    telnetty_set_option_support(ctx, TELNETTY_TELOPT_MCP, 1, 1);
-    telnetty_register_option(ctx, TELNETTY_TELOPT_MCP, telnetty_mcp_handler, NULL);
-    telnetty_option_set_user_data(ctx, TELNETTY_TELOPT_MCP, mcp_data, telnetty_mcp_data_free_cb);
-    int result = telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_MCP);
-    if (result != 0) return -1;
+    /* MCP 2.1 is in-band. We don't call telnetty_send_option — we only
+     * pin state to the bookkeeping option slot so the freer path runs on
+     * destroy. Registering a handler for TELNETTY_MCP_STATE_TELOPT is
+     * defensive: if a peer *does* send WILL 207 by accident we still
+     * respond correctly, and the handler is a no-op for MCP proper. */
+    telnetty_set_option_support(ctx, TELNETTY_MCP_STATE_TELOPT, 0, 0);
+    telnetty_register_option(ctx, TELNETTY_MCP_STATE_TELOPT,
+                             telnetty_mcp_handler, NULL);
+    telnetty_option_set_user_data(ctx, TELNETTY_MCP_STATE_TELOPT,
+                                  mcp_data, telnetty_mcp_data_free_cb);
     telnetty_mcp_register_builtin_packages(ctx);
     telnetty__mcp_data_hook = telnetty__mcp_on_data;
     /* The server speaks first: version range, no authentication key.
@@ -785,15 +802,17 @@ static void telnetty_mcp_data_free_cb(void* p) {
 
 static telnetty_mcp_data_t* telnetty_mcp_of(telnetty_context_t* ctx) {
     if (!ctx) return NULL;
-    telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_MCP];
+    telnetty_option_t* opt = ctx->options[TELNETTY_MCP_STATE_TELOPT];
     return (opt && opt->user_data) ? (telnetty_mcp_data_t*)opt->user_data : NULL;
 }
 
 static TELNETTY_UNUSED int telnetty_disable_mcp(telnetty_context_t* ctx) {
     if (!ctx) return -1;
-    
-    /* Send WONT to disable MCP */
-    return telnetty_send_option(ctx, TELNETTY_WONT, TELNETTY_TELOPT_MCP);
+    /* MCP is in-band — there is no TELNET option to WONT. Detach the
+     * inbound data hook so we stop reassembling #$# lines; leave the
+     * option slot's user_data alone (freed on destroy). */
+    telnetty__mcp_data_hook = NULL;
+    return 0;
 }
 
 static void telnetty_mcp_handler(
@@ -802,7 +821,7 @@ static void telnetty_mcp_handler(
     uint8_t command,
     void* user_data
 ) {
-    if (!ctx || option != TELNETTY_TELOPT_MCP) return;
+    if (!ctx || option != TELNETTY_MCP_STATE_TELOPT) return;
     
     telnetty_mcp_data_t* mcp_data = user_data
         ? (telnetty_mcp_data_t*)user_data

@@ -693,6 +693,64 @@ static TELNETTY_UNUSED int telnetty_enable_msp(
 );
 
 /* ============================================================================
+ * ATCP (Achaea Telnet Client Protocol) — TELOPT 200
+ *
+ * The historical owner of TELOPT 200 (predates GMCP). Iron Realms MUDs
+ * still speak this. Frames arrive as:
+ *
+ *   IAC SB 200 <package>.<message> <payload> IAC SE
+ *
+ * where <package>.<message> is a space-terminated token and <payload>
+ * is opaque bytes (often, but not always, printable text). The
+ * telnetty_atcp_callback_t receives the split package/message names and
+ * the raw payload; the callback owns nothing (all buffers are transient).
+ *
+ * Sending: telnetty_atcp_send(ctx, package, message, payload_len, payload)
+ * builds the SB frame and emits it via telnetty_send_subnegotiation.
+ * ============================================================================ */
+
+#define TELNETTY_TELOPT_ATCP 200
+
+typedef void (*telnetty_atcp_callback_t)(
+    telnetty_context_t* ctx,
+    const char* package,      /* e.g. "Char" */
+    const char* message,      /* e.g. "Vitals", or "" if none */
+    const uint8_t* payload,
+    size_t payload_len,
+    void* user_data
+);
+
+typedef struct {
+    telnetty_atcp_callback_t cb;
+    void* user_data;
+    bool enabled;
+} telnetty_atcp_data_t;
+
+/**
+ * Enable ATCP (TELOPT 200). Registers WILL, installs the SB handler,
+ * and dispatches inbound frames to `cb`. `cb` may be NULL; in that case
+ * negotiation still works but no dispatch happens.
+ */
+static TELNETTY_UNUSED int telnetty_enable_atcp(
+    telnetty_context_t* ctx,
+    telnetty_atcp_callback_t cb,
+    void* user_data
+);
+
+/**
+ * Send an ATCP frame. `payload` may be NULL / `payload_len` zero for
+ * message-only frames. Returns 0 on success, -1 on failure. Payloads
+ * larger than TELNETTY_MAX_SB_LENGTH minus the header are rejected.
+ */
+static TELNETTY_UNUSED int telnetty_atcp_send(
+    telnetty_context_t* ctx,
+    const char* package,
+    const char* message,
+    const uint8_t* payload,
+    size_t payload_len
+);
+
+/* ============================================================================
  * Implementation
  * ============================================================================ */
 
@@ -1938,6 +1996,124 @@ static TELNETTY_UNUSED int telnetty_enable_msp(
                                     telnetty__msp_data_hook, m,
                                     TELNETTY_PRIORITY_HIGH);
     return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_MSP);
+}
+
+/* ============================================================================
+ * ATCP (TELOPT 200) implementation
+ * ============================================================================ */
+
+static void telnetty_atcp_data_free(void* p) { TELNETTY_MUD_FREE(p); }
+
+static void telnetty_atcp_sb(
+    telnetty_context_t* ctx, uint8_t option,
+    const uint8_t* data, size_t length, void* user_data
+) {
+    (void)option;
+    telnetty_atcp_data_t* a = (telnetty_atcp_data_t*)user_data;
+    if (!a || !a->cb || !data || length == 0) return;
+
+    /* Split "<package>.<message>[ <payload>]". The name run ends at
+     * the first space, tab, or NUL; the payload is whatever follows a
+     * single delimiter. */
+    size_t name_end = 0;
+    while (name_end < length && data[name_end] != ' '
+                             && data[name_end] != '\t'
+                             && data[name_end] != '\0') {
+        name_end++;
+    }
+
+    /* Copy the name onto the stack so we can split on '.' with a
+     * writable buffer. Cap at 128 chars — ATCP names are always short. */
+    char name[128];
+    size_t nn = name_end < sizeof(name) - 1 ? name_end : sizeof(name) - 1;
+    memcpy(name, data, nn);
+    name[nn] = '\0';
+
+    char* dot = strchr(name, '.');
+    const char* pkg;
+    const char* msg;
+    if (dot) {
+        *dot = '\0';
+        pkg = name;
+        msg = dot + 1;
+    } else {
+        pkg = name;
+        msg = "";
+    }
+
+    /* Skip the single delimiter, if any. */
+    size_t payload_off = name_end;
+    if (payload_off < length &&
+        (data[payload_off] == ' ' || data[payload_off] == '\t')) {
+        payload_off++;
+    }
+    const uint8_t* payload = payload_off < length ? data + payload_off : NULL;
+    size_t payload_len = payload_off < length ? length - payload_off : 0;
+
+    a->cb(ctx, pkg, msg, payload, payload_len, a->user_data);
+}
+
+static void telnetty_atcp_handler(
+    telnetty_context_t* ctx, uint8_t option, uint8_t command, void* user_data
+) {
+    (void)ctx; (void)option;
+    telnetty_atcp_data_t* a = (telnetty_atcp_data_t*)user_data;
+    if (!a) return;
+    if (command == TELNETTY_DO || command == TELNETTY_WILL) a->enabled = true;
+    else if (command == TELNETTY_DONT || command == TELNETTY_WONT) a->enabled = false;
+}
+
+static TELNETTY_UNUSED int telnetty_enable_atcp(
+    telnetty_context_t* ctx,
+    telnetty_atcp_callback_t cb,
+    void* user_data
+) {
+    if (!ctx) return -1;
+    telnetty_atcp_data_t* a = (telnetty_atcp_data_t*)TELNETTY_MUD_MALLOC(sizeof(*a));
+    if (!a) return -1;
+    memset(a, 0, sizeof(*a));
+    a->cb = cb;
+    a->user_data = user_data;
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_ATCP, 1, 1);
+    telnetty_register_option(ctx, TELNETTY_TELOPT_ATCP,
+                             telnetty_atcp_handler, NULL);
+    telnetty_register_sb_handler(ctx, TELNETTY_TELOPT_ATCP,
+                                 telnetty_atcp_sb, NULL);
+    telnetty_option_set_user_data(ctx, TELNETTY_TELOPT_ATCP, a,
+                                  telnetty_atcp_data_free);
+    return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_ATCP);
+}
+
+static TELNETTY_UNUSED int telnetty_atcp_send(
+    telnetty_context_t* ctx,
+    const char* package,
+    const char* message,
+    const uint8_t* payload,
+    size_t payload_len
+) {
+    if (!ctx || !package) return -1;
+    size_t pkg_len = strlen(package);
+    size_t msg_len = message ? strlen(message) : 0;
+    /* Frame: <pkg>[.<msg>][ <payload>] — dot omitted when message empty. */
+    size_t total = pkg_len + (msg_len ? 1 + msg_len : 0)
+                           + (payload_len ? 1 + payload_len : 0);
+    if (total > TELNETTY_MAX_SB_LENGTH) return -1;
+
+    uint8_t* buf = (uint8_t*)TELNETTY_MUD_MALLOC(total);
+    if (!buf) return -1;
+    size_t off = 0;
+    memcpy(buf + off, package, pkg_len); off += pkg_len;
+    if (msg_len) {
+        buf[off++] = '.';
+        memcpy(buf + off, message, msg_len); off += msg_len;
+    }
+    if (payload_len) {
+        buf[off++] = ' ';
+        memcpy(buf + off, payload, payload_len); off += payload_len;
+    }
+    int r = telnetty_send_subnegotiation(ctx, TELNETTY_TELOPT_ATCP, buf, off);
+    TELNETTY_MUD_FREE(buf);
+    return r;
 }
 
 #endif /* TELNETTY_MUD_IMPLEMENTATION */
