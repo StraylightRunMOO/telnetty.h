@@ -751,6 +751,100 @@ static TELNETTY_UNUSED int telnetty_atcp_send(
 );
 
 /* ============================================================================
+ * ZMP (Zenith MUD Protocol) — TELOPT 93
+ *
+ * Command-oriented protocol used by Discworld and derivatives. Frames:
+ *
+ *   IAC SB 93 <cmd> NUL <arg1> NUL <arg2> NUL ... IAC SE
+ *
+ * where <cmd> is a dot-separated name (e.g. "core.hello", "zmp.check")
+ * and each argument is a NUL-terminated string. First-contact handshake:
+ * either side may send `zmp.check <feature>` to probe support; the peer
+ * replies with `zmp.support <feature>` or `zmp.no-support <feature>`.
+ *
+ * The callback receives the command name plus an argv-style array of
+ * NUL-terminated argument strings that all point into transient storage.
+ * ============================================================================ */
+
+#define TELNETTY_TELOPT_ZMP 93
+
+/* MXP (MUD eXtended Protocol) uses inline markup in ordinary DATA. The
+ * scanner reports complete tags while preserving the original DATA bytes. */
+#define TELNETTY_TELOPT_MXP 91
+
+typedef enum {
+    TELNETTY_MXP_MODE_OPEN = 0,
+    TELNETTY_MXP_MODE_SECURE = 1,
+    TELNETTY_MXP_MODE_LOCKED = 2
+} telnetty_mxp_mode_t;
+
+typedef void (*telnetty_mxp_tag_callback_t)(
+    telnetty_context_t* ctx, const char* name, const char* attributes,
+    bool closing, telnetty_mxp_mode_t mode, void* user_data
+);
+
+typedef struct {
+    telnetty_mxp_tag_callback_t cb;
+    void* user_data;
+    size_t length;
+    char tag[1024];
+    bool in_tag;
+    bool quoted;
+    char quote;
+    bool enabled;
+    telnetty_mxp_mode_t mode;
+} telnetty_mxp_data_t;
+
+/** Enable the MXP option and scan negotiated DATA for complete inline tags.
+ * Names and attributes are transient, read-only strings. This is a tokenizer:
+ * applications remain responsible for deciding which received tags to trust.
+ */
+static TELNETTY_UNUSED int telnetty_enable_mxp(
+    telnetty_context_t* ctx, telnetty_mxp_tag_callback_t cb, void* user_data
+);
+/** Set the mode value reported to later MXP callbacks. */
+static TELNETTY_UNUSED int telnetty_mxp_set_mode(
+    telnetty_context_t* ctx, telnetty_mxp_mode_t mode
+);
+
+typedef void (*telnetty_zmp_callback_t)(
+    telnetty_context_t* ctx,
+    const char* command,       /* dot-separated, e.g. "core.hello" */
+    const char* const* argv,   /* argv[argc] = NULL sentinel */
+    size_t argc,
+    void* user_data
+);
+
+typedef struct {
+    telnetty_zmp_callback_t cb;
+    void* user_data;
+    bool enabled;
+} telnetty_zmp_data_t;
+
+/**
+ * Enable ZMP (TELOPT 93). `cb` may be NULL to negotiate without a
+ * dispatcher. `argv` inside the callback is transient — copy anything
+ * you need to keep past the call.
+ */
+static TELNETTY_UNUSED int telnetty_enable_zmp(
+    telnetty_context_t* ctx,
+    telnetty_zmp_callback_t cb,
+    void* user_data
+);
+
+/**
+ * Send a ZMP command. `argv` is a NULL-terminated array of C strings;
+ * pass `argv = NULL` for a command with no arguments. Returns 0 on
+ * success, -1 on failure. The whole frame (command + NULs + args) is
+ * capped at TELNETTY_MAX_SB_LENGTH.
+ */
+static TELNETTY_UNUSED int telnetty_zmp_send(
+    telnetty_context_t* ctx,
+    const char* command,
+    const char* const* argv
+);
+
+/* ============================================================================
  * Implementation
  * ============================================================================ */
 
@@ -1397,13 +1491,24 @@ static int telnetty_gmcp_send_supports(
     const char* const* modules,
     size_t count
 ) {
-    if (!ctx) return -1;
-    
-    /* Build JSON array of modules */
+    if (!ctx || (count && !modules)) return -1;
+
+    /* Build a JSON array, escaping quotes, backslashes and control bytes. */
     size_t json_size = 2; /* [] */
     for (size_t i = 0; i < count; i++) {
-        json_size += 3 + strlen(modules[i]); /* "module" */
-        if (i < count - 1) json_size += 2; /* , */
+        if (!modules[i]) return -1;
+        size_t item = 2; /* quotes */
+        for (const unsigned char* p = (const unsigned char*)modules[i]; *p; p++) {
+            size_t n = (*p == '"' || *p == '\\') ? 2 : (*p < 0x20 ? 6 : 1);
+            if (item > TELNETTY_MAX_SB_LENGTH - n) return -1;
+            item += n;
+        }
+        if (json_size > TELNETTY_MAX_SB_LENGTH - item) return -1;
+        json_size += item;
+        if (i + 1 < count) {
+            if (json_size > TELNETTY_MAX_SB_LENGTH - 2) return -1;
+            json_size += 2;
+        }
     }
     
     char* json_data = (char*)TELNETTY_MUD_MALLOC(json_size + 1);
@@ -1414,8 +1519,19 @@ static int telnetty_gmcp_send_supports(
     
     for (size_t i = 0; i < count; i++) {
         json_data[offset++] = '"';
-        strcpy(json_data + offset, modules[i]);
-        offset += strlen(modules[i]);
+        for (const unsigned char* p = (const unsigned char*)modules[i]; *p; p++) {
+            if (*p == '"' || *p == '\\') {
+                json_data[offset++] = '\\';
+                json_data[offset++] = (char)*p;
+            } else if (*p < 0x20) {
+                static const char hex[] = "0123456789abcdef";
+                json_data[offset++] = '\\'; json_data[offset++] = 'u';
+                json_data[offset++] = '0'; json_data[offset++] = '0';
+                json_data[offset++] = hex[*p >> 4]; json_data[offset++] = hex[*p & 0x0f];
+            } else {
+                json_data[offset++] = (char)*p;
+            }
+        }
         json_data[offset++] = '"';
         
         if (i < count - 1) {
@@ -2112,6 +2228,199 @@ static TELNETTY_UNUSED int telnetty_atcp_send(
         memcpy(buf + off, payload, payload_len); off += payload_len;
     }
     int r = telnetty_send_subnegotiation(ctx, TELNETTY_TELOPT_ATCP, buf, off);
+    TELNETTY_MUD_FREE(buf);
+    return r;
+}
+
+/* ============================================================================
+ * ZMP (TELOPT 93) implementation
+ * ============================================================================ */
+
+static void telnetty__mxp_free(void* p) { TELNETTY_MUD_FREE(p); }
+
+static void telnetty__mxp_tag(telnetty_context_t* ctx, telnetty_mxp_data_t* m) {
+    size_t a = 0, b = m->length;
+    bool closing = a < b && m->tag[a] == '/';
+    if (closing) a++;
+    while (a < b && (m->tag[a] == ' ' || m->tag[a] == '\t')) a++;
+    while (b > a && (m->tag[b-1] == ' ' || m->tag[b-1] == '\t' || m->tag[b-1] == '/')) b--;
+    size_t n = a;
+    while (n < b && m->tag[n] != ' ' && m->tag[n] != '\t') n++;
+    if (n == a || !m->cb) return;
+    char saved = m->tag[n]; m->tag[n] = '\0';
+    const char* attrs = n < b ? m->tag + n + 1 : "";
+    while (*attrs == ' ' || *attrs == '\t') attrs++;
+    m->cb(ctx, m->tag + a, attrs, closing, m->mode, m->user_data);
+    m->tag[n] = saved;
+}
+
+static void telnetty__mxp_data(telnetty_context_t* ctx, telnetty_event_type_t ev,
+    const telnetty_event_data_union_t* d, void* ud, telnetty_event_priority_t prio) {
+    (void)prio;
+    telnetty_mxp_data_t* m = (telnetty_mxp_data_t*)ud;
+    if (ev != TELNETTY_EVENT_DATA || !d || !m || !m->cb || !m->enabled) return;
+    for (size_t i = 0; i < d->data.length; i++) {
+        unsigned char c = d->data.data[i];
+        if (!m->in_tag) { if (c == '<') { m->in_tag = true; m->length = 0; } continue; }
+        if (m->quoted) { if (c == (unsigned char)m->quote) m->quoted = false; }
+        else if (c == '\'' || c == '"') { m->quoted = true; m->quote = (char)c; }
+        else if (c == '>') { m->tag[m->length] = '\0'; telnetty__mxp_tag(ctx, m); m->in_tag = false; m->length = 0; continue; }
+        else if (c == '<') m->length = 0;
+        if (m->length + 1 < sizeof(m->tag)) m->tag[m->length++] = (char)c;
+        else { m->in_tag = false; m->length = 0; m->quoted = false; }
+    }
+}
+
+static void telnetty__mxp_option(telnetty_context_t* ctx, uint8_t option,
+                                  uint8_t command, void* ud) {
+    (void)ctx; (void)option;
+    telnetty_mxp_data_t* m = (telnetty_mxp_data_t*)ud;
+    if (m) m->enabled = command == TELNETTY_DO || command == TELNETTY_WILL;
+}
+
+static TELNETTY_UNUSED int telnetty_enable_mxp(telnetty_context_t* ctx,
+    telnetty_mxp_tag_callback_t cb, void* user_data) {
+    if (!ctx) return -1;
+    telnetty_option_t* existing = ctx->options[TELNETTY_TELOPT_MXP];
+    telnetty_mxp_data_t* prior = existing ? (telnetty_mxp_data_t*)existing->user_data : NULL;
+    if (prior) {
+        prior->cb = cb; prior->user_data = user_data;
+        prior->length = 0; prior->in_tag = false; prior->quoted = false;
+        return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_MXP);
+    }
+    telnetty_mxp_data_t* m = (telnetty_mxp_data_t*)TELNETTY_MUD_MALLOC(sizeof(*m));
+    if (!m) return -1;
+    memset(m, 0, sizeof(*m)); m->cb = cb; m->user_data = user_data;
+    if (telnetty_set_option_support(ctx, TELNETTY_TELOPT_MXP, 1, 1) != 0 ||
+        telnetty_register_option(ctx, TELNETTY_TELOPT_MXP, telnetty__mxp_option, NULL) != 0) {
+        TELNETTY_MUD_FREE(m); return -1;
+    }
+    if (telnetty_register_event_handler(ctx, TELNETTY_EVENT_DATA, telnetty__mxp_data,
+                                        m, TELNETTY_PRIORITY_HIGH) != 0) {
+        TELNETTY_MUD_FREE(m); return -1;
+    }
+    telnetty_option_set_user_data(ctx, TELNETTY_TELOPT_MXP, m, telnetty__mxp_free);
+    return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_MXP);
+}
+
+static TELNETTY_UNUSED int telnetty_mxp_set_mode(telnetty_context_t* ctx,
+                                                  telnetty_mxp_mode_t mode) {
+    if (!ctx || mode < TELNETTY_MXP_MODE_OPEN || mode > TELNETTY_MXP_MODE_LOCKED) return -1;
+    telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_MXP];
+    telnetty_mxp_data_t* m = opt ? (telnetty_mxp_data_t*)opt->user_data : NULL;
+    if (!m) return -1;
+    m->mode = mode;
+    return 0;
+}
+
+static void telnetty_zmp_data_free(void* p) { TELNETTY_MUD_FREE(p); }
+
+/* Small stack-friendly argv cap. ZMP messages in the wild are typically
+ * a handful of args; anything past this cap is silently truncated to
+ * argv_cap - 1 rather than dropping the whole frame. */
+#define TELNETTY_ZMP_MAX_ARGV 32
+
+static void telnetty_zmp_sb(
+    telnetty_context_t* ctx, uint8_t option,
+    const uint8_t* data, size_t length, void* user_data
+) {
+    (void)option;
+    telnetty_zmp_data_t* z = (telnetty_zmp_data_t*)user_data;
+    if (!z || !z->enabled || !z->cb || !data || length < 2) return;
+
+    /* First NUL-terminated string is the command. Every subsequent NUL-
+     * terminated run is an argument. We index into `data` in place — safe
+     * because the SB payload is guaranteed to have been reassembled with
+     * IAC-IAC escapes decoded, and the trailing NUL requirement means the
+     * payload's own bytes are the strings the callback sees. */
+    const char* cmd = (const char*)data;
+    size_t i = 0;
+    while (i < length && data[i] != 0) i++;
+    if (i >= length) return;  /* command wasn't NUL-terminated */
+    i++;
+
+    const char* argv[TELNETTY_ZMP_MAX_ARGV];
+    size_t argc = 0;
+    while (i < length && argc + 1 < TELNETTY_ZMP_MAX_ARGV) {
+        argv[argc++] = (const char*)(data + i);
+        while (i < length && data[i] != 0) i++;
+        if (i >= length) {
+            /* Unterminated last arg — drop the whole frame for safety;
+             * ZMP frames MUST end with a NUL after the last arg per the
+             * spec, and honoring a truncated arg would let a peer smuggle
+             * bytes past the string boundary. */
+            return;
+        }
+        i++;
+    }
+    argv[argc] = NULL;
+
+    z->cb(ctx, cmd, argv, argc, z->user_data);
+}
+
+static void telnetty_zmp_handler(
+    telnetty_context_t* ctx, uint8_t option, uint8_t command, void* user_data
+) {
+    (void)ctx; (void)option;
+    telnetty_zmp_data_t* z = (telnetty_zmp_data_t*)user_data;
+    if (!z) return;
+    if (command == TELNETTY_DO || command == TELNETTY_WILL) z->enabled = true;
+    else if (command == TELNETTY_DONT || command == TELNETTY_WONT) z->enabled = false;
+}
+
+static TELNETTY_UNUSED int telnetty_enable_zmp(
+    telnetty_context_t* ctx,
+    telnetty_zmp_callback_t cb,
+    void* user_data
+) {
+    if (!ctx) return -1;
+    telnetty_zmp_data_t* z = (telnetty_zmp_data_t*)TELNETTY_MUD_MALLOC(sizeof(*z));
+    if (!z) return -1;
+    memset(z, 0, sizeof(*z));
+    z->cb = cb;
+    z->user_data = user_data;
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_ZMP, 1, 1);
+    telnetty_register_option(ctx, TELNETTY_TELOPT_ZMP,
+                             telnetty_zmp_handler, NULL);
+    telnetty_register_sb_handler(ctx, TELNETTY_TELOPT_ZMP,
+                                 telnetty_zmp_sb, NULL);
+    telnetty_option_set_user_data(ctx, TELNETTY_TELOPT_ZMP, z,
+                                  telnetty_zmp_data_free);
+    return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_ZMP);
+}
+
+static TELNETTY_UNUSED int telnetty_zmp_send(
+    telnetty_context_t* ctx,
+    const char* command,
+    const char* const* argv
+) {
+    if (!ctx || !command) return -1;
+    /* Size: <command> NUL <argv[0]> NUL ... <argv[n-1]> NUL. */
+    size_t cmd_len = strlen(command);
+    if (cmd_len == 0 || cmd_len >= TELNETTY_MAX_SB_LENGTH) return -1;
+    size_t total = cmd_len + 1;
+    if (argv) {
+        for (const char* const* p = argv; *p; p++) {
+            size_t n = strlen(*p);
+            if (n >= TELNETTY_MAX_SB_LENGTH - total) return -1;
+            total += n + 1;
+        }
+    }
+    if (total > TELNETTY_MAX_SB_LENGTH) return -1;
+
+    uint8_t* buf = (uint8_t*)TELNETTY_MUD_MALLOC(total);
+    if (!buf) return -1;
+    size_t off = 0;
+    memcpy(buf + off, command, cmd_len); off += cmd_len;
+    buf[off++] = 0;
+    if (argv) {
+        for (const char* const* p = argv; *p; p++) {
+            size_t al = strlen(*p);
+            memcpy(buf + off, *p, al); off += al;
+            buf[off++] = 0;
+        }
+    }
+    int r = telnetty_send_subnegotiation(ctx, TELNETTY_TELOPT_ZMP, buf, off);
     TELNETTY_MUD_FREE(buf);
     return r;
 }

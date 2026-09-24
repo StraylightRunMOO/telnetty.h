@@ -29,6 +29,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <sys/select.h>
+#include <sys/time.h>
 #include <sys/ioctl.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -328,7 +330,7 @@ static int connect_to_server(const char* host, int port) {
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(port);
-    memcpy(&server_addr.sin_addr, host_info->h_addr, host_info->h_length);
+    memcpy(&server_addr.sin_addr, host_info->h_addr_list[0], host_info->h_length);
     
     /* Connect to server */
     printf("Connecting to %s:%d...\n", host, port);

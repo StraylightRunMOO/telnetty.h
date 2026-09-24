@@ -748,6 +748,7 @@ static TELNETTY_UNUSED int telnetty_mccp2_init(telnetty_context_t* ctx, telnetty
     
 #else
     /* No zlib support - return error */
+    (void)level;
     return -1;
 #endif
     
@@ -872,6 +873,7 @@ static TELNETTY_UNUSED int telnetty_mccp3_init(telnetty_context_t* ctx, telnetty
     
 #else
     /* No zlib support - return error */
+    (void)level;
     return -1;
 #endif
     
@@ -949,6 +951,8 @@ static int telnetty_mccp3_compress(
     
 #else
     /* No zlib support */
+    (void)input_len;
+    (void)output_len;
     return -1;
 #endif
 }

@@ -442,6 +442,13 @@ static void test_mud_mssp_comprehensive(void) {
 static void test_compression_basic(void) {
     telnetty_context_t* ctx = telnetty_create(NULL, NULL);
     TEST_ASSERT_NOT_NULL(ctx, "Context for compression tests");
+    if (!ctx) return;
+
+#ifndef TELNETTY_HAVE_ZLIB
+    printf("  skipped: compression requires zlib\n");
+    telnetty_destroy(ctx);
+    return;
+#endif
     
     /* Test MCCP2 */
     TEST_ASSERT_EQUAL(0, telnetty_enable_mccp2(ctx, 6), "Enable MCCP2");

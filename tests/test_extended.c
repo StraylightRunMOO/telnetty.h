@@ -3,10 +3,10 @@
  * @brief Extended-surface regression tests.
  *
  * Covers the 1.1 bug fixes, additive API (log/timeout/rate-limit),
- * MTTS three-cycle handshake, color state, MCP 2.1 parser, extended event
- * system, RFC option round-trips (BINARY/STATUS/TSPEED/LFLOW/LINEMODE),
- * and split-input torture. Every new bug fix or protocol addition should
- * land a case here.
+ * MTTS three-cycle handshake, color state, MCP 2.1 parser, MXP/ZMP/MSP,
+ * extended event system, RFC option round-trips (BINARY/STATUS/TSPEED/
+ * LFLOW/LINEMODE), and split-input torture. Every new bug fix or protocol
+ * addition should land a case here.
  *
  */
 
@@ -1251,6 +1251,42 @@ static void test_mnes_send(void) {
     }
     OK(found_client_name, "mnes: CLIENT_NAME on wire");
 
+    /* Reserved RFC 1572 marker bytes in fields must be escaped, and the
+     * payload must not contain incidental C-string terminators. */
+    telnetty_buffer_reset(ctx->out_buffer);
+    const char* escaped_vars[] = { "A\001B" };
+    const char* escaped_values[] = { "x\002\003y" };
+    OK(telnetty_send_environ(ctx, escaped_vars, escaped_values, 1) == 0,
+       "environ: marker escaping send");
+    const uint8_t expected_env[] = {
+        TELNETTY_ENV_VAR, 'A', TELNETTY_ENV_ESC, TELNETTY_ENV_VALUE, 'B',
+        TELNETTY_ENV_VALUE, 'x', TELNETTY_ENV_ESC, TELNETTY_ENV_ESC,
+        TELNETTY_ENV_ESC, TELNETTY_ENV_USERVAR, 'y'
+    };
+    int found_escaped_env = 0;
+    for (size_t i = 0; i + sizeof(expected_env) <= ctx->out_buffer->length; i++) {
+        if (memcmp(ctx->out_buffer->data + i, expected_env, sizeof(expected_env)) == 0) {
+            found_escaped_env = 1; break;
+        }
+    }
+    OK(found_escaped_env, "environ: reserved bytes escaped without NULs");
+
+    telnetty_destroy(ctx);
+}
+
+static void test_gmcp_supports_json_escaping(void) {
+    telnetty_context_t* ctx = telnetty_create(NULL, NULL);
+    const char* modules[] = { "module\"quoted" };
+    OK(telnetty_gmcp_send_supports(ctx, modules, 1) == 0,
+       "gmcp: supports escapes quotes");
+    const char expected[] = "Core.Supports.Set [\"module\\\"quoted\"]";
+    int found = 0;
+    for (size_t i = 0; i + sizeof(expected) - 1 <= ctx->out_buffer->length; i++) {
+        if (memcmp(ctx->out_buffer->data + i, expected, sizeof(expected) - 1) == 0) {
+            found = 1; break;
+        }
+    }
+    OK(found, "gmcp: supports emits valid escaped JSON string");
     telnetty_destroy(ctx);
 }
 
@@ -1467,6 +1503,152 @@ static void test_mcp_does_not_negotiate_on_wire(void) {
     telnetty_destroy(ctx);
 }
 
+/* ----- ZMP (TELOPT 93) round-trip ----- */
+
+static int mxp_calls;
+static char mxp_name[32], mxp_attrs[96];
+static char mxp_open_attrs[96];
+static int mxp_closing;
+static telnetty_mxp_mode_t mxp_mode;
+static void mxp_cb(telnetty_context_t* ctx, const char* name, const char* attrs,
+                   bool closing, telnetty_mxp_mode_t mode, void* ud) {
+    (void)ctx; (void)ud; mxp_calls++;
+    snprintf(mxp_name, sizeof(mxp_name), "%s", name);
+    snprintf(mxp_attrs, sizeof(mxp_attrs), "%s", attrs);
+    if (!closing) snprintf(mxp_open_attrs, sizeof(mxp_open_attrs), "%s", attrs);
+    mxp_closing = closing; mxp_mode = mode;
+}
+
+static void test_mxp_streaming_tags(void) {
+    mxp_calls = 0;
+    telnetty_context_t* ctx = telnetty_create(NULL, NULL);
+    OK(telnetty_enable_mxp(ctx, mxp_cb, NULL) == 0, "mxp: enable");
+    OK(telnetty_mxp_set_mode(ctx, TELNETTY_MXP_MODE_SECURE) == 0, "mxp: mode set");
+    const uint8_t peer_do[] = { TELNETTY_IAC, TELNETTY_DO, TELNETTY_TELOPT_MXP };
+    telnetty_process(ctx, peer_do, sizeof(peer_do));
+    const uint8_t a[] = "text <SEND HREF=\"look at > gate\"";
+    const uint8_t b[] = ">open</SEND>";
+    telnetty_process(ctx, a, sizeof(a)-1);
+    OK(mxp_calls == 0, "mxp: partial tag waits for close");
+    telnetty_process(ctx, b, sizeof(b)-1);
+    OK(mxp_calls == 2, "mxp: split quoted tags dispatched");
+    OK(strcmp(mxp_name, "SEND") == 0 && mxp_closing, "mxp: closing tag parsed");
+    OK(strcmp(mxp_open_attrs, "HREF=\"look at > gate\"") == 0,
+       "mxp: quoted attribute keeps embedded delimiter");
+    OK(mxp_mode == TELNETTY_MXP_MODE_SECURE, "mxp: callback sees current mode");
+    OK(telnetty_enable_mxp(ctx, mxp_cb, NULL) == 0, "mxp: repeated enable is safe");
+    const uint8_t repeat[] = "<B>";
+    telnetty_process(ctx, repeat, sizeof(repeat)-1);
+    OK(mxp_calls == 3, "mxp: repeated enable installs one scanner");
+    telnetty_destroy(ctx);
+}
+
+static void test_buffer_append_limit(void) {
+    telnetty_buffer_t* b = telnetty_buffer_create(16);
+    uint8_t* bytes = (uint8_t*)malloc(TELNETTY_MAX_BUFFER_SIZE);
+    OK(b != NULL && bytes != NULL, "buffer limit: allocate");
+    if (b && bytes) {
+        memset(bytes, 'x', TELNETTY_MAX_BUFFER_SIZE);
+        OK(telnetty_buffer_append(b, bytes, TELNETTY_MAX_BUFFER_SIZE) ==
+           (int)TELNETTY_MAX_BUFFER_SIZE, "buffer limit: maximum accepted");
+        OK(telnetty_buffer_append(b, bytes, 1) == -1, "buffer limit: over maximum rejected");
+        OK(b->length == TELNETTY_MAX_BUFFER_SIZE, "buffer limit: length preserved");
+    }
+    free(bytes);
+    telnetty_buffer_destroy(b);
+}
+
+static int   zmp_calls = 0;
+static char  zmp_cmd[64];
+static char  zmp_argv[8][64];
+static size_t zmp_argc = 0;
+
+static void zmp_cb(telnetty_context_t* ctx, const char* cmd,
+                   const char* const* argv, size_t argc, void* ud) {
+    (void)ctx; (void)ud;
+    zmp_calls++;
+    snprintf(zmp_cmd, sizeof(zmp_cmd), "%s", cmd ? cmd : "");
+    zmp_argc = argc < 8 ? argc : 8;
+    for (size_t i = 0; i < zmp_argc; i++) {
+        snprintf(zmp_argv[i], sizeof(zmp_argv[0]), "%s", argv[i] ? argv[i] : "");
+    }
+}
+
+static void test_zmp_roundtrip(void) {
+    zmp_calls = 0;
+    telnetty_context_t* ctx = telnetty_create(NULL, NULL);
+    OK(telnetty_enable_zmp(ctx, zmp_cb, NULL) == 0, "zmp: enable");
+
+    /* Peer accepts + sends "zmp.check\0color.256\0". */
+    const uint8_t peer_do[] = { TELNETTY_IAC, TELNETTY_DO, TELNETTY_TELOPT_ZMP };
+    telnetty_process(ctx, peer_do, sizeof(peer_do));
+
+    const uint8_t frame[] = {
+        TELNETTY_IAC, TELNETTY_SB, TELNETTY_TELOPT_ZMP,
+        'z','m','p','.','c','h','e','c','k', 0,
+        'c','o','l','o','r','.','2','5','6', 0,
+        TELNETTY_IAC, TELNETTY_SE
+    };
+    telnetty_process(ctx, frame, sizeof(frame));
+
+    OK(zmp_calls == 1, "zmp: dispatched once");
+    OK(strcmp(zmp_cmd, "zmp.check") == 0, "zmp: command = zmp.check");
+    OK(zmp_argc == 1, "zmp: 1 argument");
+    OK(strcmp(zmp_argv[0], "color.256") == 0, "zmp: argv[0] = color.256");
+
+    /* Multi-arg. */
+    zmp_calls = 0;
+    const uint8_t frame2[] = {
+        TELNETTY_IAC, TELNETTY_SB, TELNETTY_TELOPT_ZMP,
+        'c','o','r','e','.','h','e','l','l','o', 0,
+        'M','U','D', 0,
+        '1','.','0', 0,
+        TELNETTY_IAC, TELNETTY_SE
+    };
+    telnetty_process(ctx, frame2, sizeof(frame2));
+    OK(zmp_calls == 1, "zmp: multi-arg dispatched");
+    OK(zmp_argc == 2 && strcmp(zmp_argv[0], "MUD") == 0
+       && strcmp(zmp_argv[1], "1.0") == 0, "zmp: two args parsed");
+
+    /* Zero-arg command. */
+    zmp_calls = 0;
+    const uint8_t frame3[] = {
+        TELNETTY_IAC, TELNETTY_SB, TELNETTY_TELOPT_ZMP,
+        'z','m','p','.','p','i','n','g', 0,
+        TELNETTY_IAC, TELNETTY_SE
+    };
+    telnetty_process(ctx, frame3, sizeof(frame3));
+    OK(zmp_calls == 1 && zmp_argc == 0 && strcmp(zmp_cmd, "zmp.ping") == 0,
+       "zmp: zero-arg command");
+
+    /* Unterminated last arg (malformed) — must be dropped, no callback. */
+    zmp_calls = 0;
+    const uint8_t bad[] = {
+        TELNETTY_IAC, TELNETTY_SB, TELNETTY_TELOPT_ZMP,
+        'x', '.', 'y', 0,
+        'u','n','t','e','r','m',  /* no NUL */
+        TELNETTY_IAC, TELNETTY_SE
+    };
+    telnetty_process(ctx, bad, sizeof(bad));
+    OK(zmp_calls == 0, "zmp: unterminated arg rejected");
+
+    /* Send: verify wire shape. */
+    telnetty_buffer_reset(ctx->out_buffer);
+    const char* argv[] = { "foo", "bar", NULL };
+    OK(telnetty_zmp_send(ctx, "zmp.support", argv) == 0, "zmp: send OK");
+    const uint8_t* w = ctx->out_buffer->data;
+    size_t wl = ctx->out_buffer->length;
+    int found = 0;
+    /* Look for "zmp.support\0foo\0bar\0" inside the SB. */
+    const char needle[] = "zmp.support\0foo\0bar";
+    for (size_t i = 0; i + sizeof(needle) - 1 <= wl; i++) {
+        if (memcmp(w + i, needle, sizeof(needle) - 1) == 0) { found = 1; break; }
+    }
+    OK(found, "zmp: wire payload has NUL-separated args");
+
+    telnetty_destroy(ctx);
+}
+
 int main(void) {
     printf("--- Telnetty Extended-Surface Tests ---\n");
     test_version_macros();
@@ -1504,9 +1686,12 @@ int main(void) {
     test_mccp1_negotiate();
     test_msp_trigger();
     test_mnes_send();
+    test_gmcp_supports_json_escaping();
     test_osc8_link();
     test_osc_query();
     test_starttls_signaling();
+    test_mxp_streaming_tags();
+    test_buffer_append_limit();
     test_atcp_roundtrip();
     test_mcp_does_not_negotiate_on_wire();
 

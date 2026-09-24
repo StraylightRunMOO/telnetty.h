@@ -21,6 +21,7 @@
 #define TELNETTY_CORE_H
 
 #include <stdint.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <string.h>
@@ -974,12 +975,22 @@ static TELNETTY_UNUSED void telnetty_buffer_destroy(telnetty_buffer_t* buffer) {
 
 static TELNETTY_UNUSED int telnetty_buffer_append(telnetty_buffer_t* buffer, const uint8_t* data, size_t length) {
     if (!buffer || !data || length == 0) return 0;
-    
+
+    /* Keep both the size arithmetic and legacy int return value bounded. */
+    if (length > TELNETTY_MAX_BUFFER_SIZE ||
+        buffer->length > TELNETTY_MAX_BUFFER_SIZE - length ||
+        length > (size_t)INT_MAX) return -1;
+    size_t required = buffer->length + length;
+
     /* Check if we need to grow the buffer */
-    if (buffer->length + length > buffer->size) {
+    if (required > buffer->size) {
         size_t new_size = buffer->size;
         if (new_size == 0) new_size = TELNETTY_INITIAL_BUFFER_SIZE;
-        while (new_size < buffer->length + length) {
+        while (new_size < required) {
+            if (new_size > TELNETTY_MAX_BUFFER_SIZE / 2) {
+                new_size = TELNETTY_MAX_BUFFER_SIZE;
+                break;
+            }
             new_size *= 2;
         }
         
@@ -988,7 +999,7 @@ static TELNETTY_UNUSED int telnetty_buffer_append(telnetty_buffer_t* buffer, con
             new_size = TELNETTY_MAX_BUFFER_SIZE;
         }
         
-        if (new_size < buffer->length + length) {
+        if (new_size < required) {
             return -1; /* Would exceed maximum size */
         }
         
