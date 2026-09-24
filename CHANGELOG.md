@@ -131,18 +131,70 @@ minor release with additive-only API changes.
   replace the WILL/DO switch boilerplate in every example / consumer.
 - `telnetty_fire_custom_event_bin(ctx, id, data, length, prio)` —
   binary-safe replacement for `telnetty_fire_custom_event`.
+- **Structured logging**: `telnetty_log_level_t` (TRACE/DEBUG/INFO/WARN/
+  ERROR), `telnetty_log_callback_t`,
+  `telnetty_set_log_callback(ctx, level, cb, user_data)`, and
+  `telnetty_log(ctx, level, category, fmt, ...)`. `report_error`
+  automatically routes at ERROR level. NULL sink = silent (no stderr
+  fallback).
+- **Negotiation timeout**:
+  `telnetty_set_negotiation_timeout(ctx, ms)` records a per-option
+  deadline whenever `telnetty_send_option` pushes an option into any
+  WANT* state. `telnetty_tick(ctx, now_ms)` fires `EVENT_ERROR` with
+  `TELNETTY_ERR_TIMEOUT` on expiry and resets the pending side to
+  `Q_NO` so the caller can retry. Deadlines auto-clear when both sides
+  settle to `Q_NO`/`Q_YES`.
+- **Rate limiting**:
+  `telnetty_set_rate_limit(ctx, bytes_per_sec, iac_per_sec)` installs
+  token buckets that refill on each `telnetty_tick`. Zero either bucket
+  to disable it. Trips fire `EVENT_ERROR` with `TELNETTY_ERR_RATE_LIMIT`
+  and drop the offending batch. Requires `telnetty_tick` to be driven
+  by the caller; unticked contexts skip enforcement.
+- **Structured MSDP**: `telnetty_msdp_recursive_callback_t` +
+  `telnetty_msdp_set_recursive_callback(ctx, cb, user_data)` surface
+  `EV_VAR`/`EV_VAL`/`EV_TABLE_OPEN`/`EV_TABLE_CLOSE`/`EV_ARRAY_OPEN`/
+  `EV_ARRAY_CLOSE` with depth + dot-joined parent path. Runs
+  side-by-side with the flat `telnetty_enable_msdp` handler for
+  backward compatibility. Bounded at `TELNETTY_MSDP_MAX_DEPTH` (16).
+- **Extended event system** (`telnetty_events.h`): the previously-stub
+  `telnetty_register_event_handler` / `telnetty_unregister_event_handler`
+  / `telnetty_fire_event_ex` are now a real priority-ordered linked
+  list on `ctx->event_handlers`. HIGH fires before NORMAL fires before
+  LOW regardless of registration order.
+- **MTTS three-cycle handshake** (`telnetty_mud.h`): full cycle-1
+  client name, cycle-2 terminal type, cycle-3 `MTTS <flags>` state
+  machine driven by `telnetty_mtts_sb_handler`. Server-side captures
+  peer name/term/flags; client-side responds with configurable
+  `local_flags` (defaults ANSI | UTF8 | 256COLORS).
+- **Color state attachment** (`telnetty_color.h`):
+  `telnetty_color_init` / `_attach` install a `telnetty_color_state_t`
+  on the context. Every `set_foreground` / `set_background` /
+  `set_attribute` / `reset*` now actually emits SGR into
+  `ctx->out_buffer` using bounds-checked helpers. Added 256-color and
+  24-bit RGB variants + `rgb_to_256` using the correct xterm 6×6×6
+  cube stops.
+- **MCP 2.1 in-band wire format** (`telnetty_mcp.h`): rewritten to
+  emit `#$#package-message <auth-key> key: value ...` in-band (per
+  MCP 2.1) instead of the previous IAC SB 200 wrapper. Real tokenizer
+  with quoted-arg support (`\"` and `\\` escapes), `_data-tag` cord
+  tracking (bounded at 32 open cords), and the `mcp` / `mcp-negotiate-can` /
+  `mcp-negotiate-end` handshake. Auth key generation prefers
+  `/dev/urandom` when available with a `time(NULL) ^ (uintptr_t)ctx`
+  fallback. Line length capped at `TELNETTY_MCP_MAX_LINE` (64 KiB).
 
 ### Notes
 
 - The prior `TELNETTY_MAX_OPTION_LENGTH` (256) is retained as a legacy
   alias; the parser uses `TELNETTY_MAX_SB_LENGTH` (64 KiB default).
-- Thread safety: one `telnetty_context_t` per thread. The
+- **Thread safety**: one `telnetty_context_t` per thread. The
   `TELNETTY_POOL_FLAG_THREAD_SAFE` / `TELNETTY_QUEUE_FLAG_THREAD_SAFE`
   flags remain declared for source-compatibility but have no effect and
-  should be considered deprecated.
-- The MCP 2.1 (`telnetty_mcp.h`) surface is unchanged and still
-  incomplete; it will be rewritten in a subsequent minor. Treat as
-  experimental. Same applies to the MTTS three-cycle handshake, the
-  extended-event linked list registered via
-  `telnetty_register_event_handler`, and the color state attached via
-  `telnetty_color_init`/`_attach`.
+  should be considered deprecated. Rate-limit and negotiation-timeout
+  state, in particular, is not synchronized — driving `telnetty_tick`
+  concurrently with `telnetty_process` from a second thread is
+  undefined.
+- SB payload footprint: `telnetty_context_t` already owns a persistent
+  256-byte `sb_buffer` that is reset (not freed) between frames, so
+  small SB payloads (NAWS, TTYPE, short MTTS) are already zero-alloc
+  per frame after context creation. The planned `sb_inline[64]`
+  optimization is redundant and was not added.

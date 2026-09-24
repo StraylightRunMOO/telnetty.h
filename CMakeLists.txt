@@ -144,13 +144,24 @@ if(BUILD_TESTS)
     endif()
     add_test(NAME test_protocols COMMAND test_protocols)
 
-    # 1.1 polish regression tests
-    add_executable(test_polish tests/test_polish.c)
+    # Extended-surface regression tests: 1.1 fixes, additive API, MTTS, color, 
+    # MCP, extended events, RFC option round-trips, split-input torture.
+    # Every new bug fix or protocol addition should land a case here.
+    add_executable(test_extended tests/test_extended.c)
     if(ZLIB_FOUND)
-        target_compile_definitions(test_polish PRIVATE TELNETTY_HAVE_ZLIB)
-        target_link_libraries(test_polish ${ZLIB_LIBRARIES})
+        target_compile_definitions(test_extended PRIVATE TELNETTY_HAVE_ZLIB)
+        target_link_libraries(test_extended ${ZLIB_LIBRARIES})
     endif()
-    add_test(NAME test_polish COMMAND test_polish)
+    add_test(NAME test_extended COMMAND test_extended)
+
+    # MANIAC Markov fuzz. Skipped when the generated matrices header is
+    # absent — regenerate with `python3 tests/maniac_gen.py`.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/maniac_matrices.h")
+        add_executable(test_maniac tests/test_maniac.c)
+        target_include_directories(test_maniac PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+        add_test(NAME test_maniac COMMAND test_maniac)
+    endif()
 endif()
 
 # Documentation

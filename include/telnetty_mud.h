@@ -82,13 +82,46 @@ typedef void (*telnetty_msdp_handler_t)(
     void* user_data
 );
 
+/* Recursive MSDP event type — surfaced to telnetty_msdp_recursive_callback_t
+ * so nested TABLE / ARRAY payloads keep their structure instead of collapsing
+ * to a flat "var/val" pair. */
+typedef enum {
+    TELNETTY_MSDP_EV_VAR = 1,           /**< A variable name (before its value) */
+    TELNETTY_MSDP_EV_VAL,               /**< A scalar value */
+    TELNETTY_MSDP_EV_TABLE_OPEN,        /**< Nested table begins */
+    TELNETTY_MSDP_EV_TABLE_CLOSE,       /**< Nested table ends */
+    TELNETTY_MSDP_EV_ARRAY_OPEN,        /**< Array begins */
+    TELNETTY_MSDP_EV_ARRAY_CLOSE        /**< Array ends */
+} telnetty_msdp_event_t;
+
+/* Recursive MSDP handler function type.
+ *  - `depth`: 0 at the outermost variable, incremented per open table/array.
+ *  - `path`:  dot-joined ancestor variable names, or "" at depth 0.
+ *  - `value`: non-NULL for EV_VAL, otherwise NULL (containers/vars carry no
+ *             payload here — the VAR event delivers the name).
+ */
+typedef void (*telnetty_msdp_recursive_callback_t)(
+    telnetty_context_t* ctx,
+    int depth,
+    telnetty_msdp_event_t type,
+    const char* path,
+    const char* value,
+    void* user_data
+);
+
+#ifndef TELNETTY_MSDP_MAX_DEPTH
+#define TELNETTY_MSDP_MAX_DEPTH 16
+#endif
+
 /* MSDP data structure */
 typedef struct {
     telnetty_msdp_variable_t* variables;  /**< MSDP variables */
     size_t variable_count;              /**< Number of variables */
     size_t capacity;                    /**< Variable array capacity */
-    telnetty_msdp_handler_t handler;      /**< MSDP handler callback */
+    telnetty_msdp_handler_t handler;      /**< MSDP handler callback (flat) */
     void* user_data;                    /**< User data for handler */
+    telnetty_msdp_recursive_callback_t rec_handler; /**< Structured handler */
+    void* rec_user_data;                /**< User data for structured handler */
     bool negotiation_complete;          /**< Negotiation is complete */
 } telnetty_msdp_data_t;
 
@@ -118,6 +151,25 @@ static void telnetty_msdp_handler(
 static int telnetty_enable_msdp(
     telnetty_context_t* ctx,
     telnetty_msdp_handler_t handler,
+    void* user_data
+);
+
+/**
+ * Install a structured MSDP callback that preserves TABLE / ARRAY nesting.
+ *
+ * The recursive callback fires alongside the flat `handler` from
+ * telnetty_enable_msdp — flat consumers keep working; new consumers get
+ * depth-tracked EV_TABLE_OPEN/CLOSE and EV_ARRAY_OPEN/CLOSE events plus
+ * the ancestor-joined `path` for each EV_VAR / EV_VAL. Depth is capped
+ * at TELNETTY_MSDP_MAX_DEPTH (default 16); frames that would exceed the
+ * cap fire EVENT_ERROR with TELNETTY_ERR_PROTOCOL and are abandoned.
+ *
+ * `cb` may be NULL to remove the handler. Must be called after
+ * telnetty_enable_msdp.
+ */
+static TELNETTY_UNUSED int telnetty_msdp_set_recursive_callback(
+    telnetty_context_t* ctx,
+    telnetty_msdp_recursive_callback_t cb,
     void* user_data
 );
 
@@ -676,6 +728,98 @@ static void telnetty_msdp_handler(
         (command == TELNETTY_DO || command == TELNETTY_WILL);
 }
 
+/* Recursive walker: emits structured events into rec_handler. `path_stack`
+ * holds ancestor VAR names dot-joined lazily on each fire. */
+static void telnetty__msdp_walk_recursive(
+    telnetty_context_t* ctx,
+    telnetty_msdp_data_t* msdp,
+    const uint8_t* data,
+    size_t length
+) {
+    if (!msdp->rec_handler) return;
+
+    const char* stack[TELNETTY_MSDP_MAX_DEPTH];
+    int depth = 0;
+    memset(stack, 0, sizeof(stack));
+    /* Ephemeral per-VAR name storage — one slot per depth level. Names are
+     * copied here because the payload may go out of scope mid-walk. */
+    char names[TELNETTY_MSDP_MAX_DEPTH][128];
+
+    char path_buf[1024];
+    #define BUILD_PATH() do { \
+        size_t off = 0; path_buf[0] = '\0'; \
+        for (int _d = 0; _d < depth; _d++) { \
+            if (!stack[_d]) continue; \
+            size_t nl = strlen(stack[_d]); \
+            if (off + nl + 2 >= sizeof(path_buf)) break; \
+            if (off) path_buf[off++] = '.'; \
+            memcpy(path_buf + off, stack[_d], nl); \
+            off += nl; path_buf[off] = '\0'; \
+        } \
+    } while (0)
+
+    size_t i = 0;
+    while (i < length) {
+        uint8_t tag = data[i];
+        if (tag == TELNETTY_MSDP_VAR) {
+            i++;
+            size_t vs = i;
+            while (i < length && data[i] > TELNETTY_MSDP_ARRAY_CLOSE) i++;
+            size_t vn = i - vs;
+            if (depth < 0 || depth >= TELNETTY_MSDP_MAX_DEPTH) {
+                telnetty_report_error(ctx, TELNETTY_ERR_PROTOCOL,
+                                      "MSDP nesting exceeds max depth");
+                return;
+            }
+            if (vn >= sizeof(names[0])) vn = sizeof(names[0]) - 1;
+            memcpy(names[depth], data + vs, vn);
+            names[depth][vn] = '\0';
+            stack[depth] = names[depth];
+            BUILD_PATH();
+            msdp->rec_handler(ctx, depth, TELNETTY_MSDP_EV_VAR,
+                              path_buf, NULL, msdp->rec_user_data);
+        } else if (tag == TELNETTY_MSDP_VAL) {
+            i++;
+            size_t vs = i;
+            while (i < length && data[i] > TELNETTY_MSDP_ARRAY_CLOSE) i++;
+            size_t vn = i - vs;
+            char val[512];
+            if (vn >= sizeof(val)) vn = sizeof(val) - 1;
+            memcpy(val, data + vs, vn);
+            val[vn] = '\0';
+            BUILD_PATH();
+            msdp->rec_handler(ctx, depth, TELNETTY_MSDP_EV_VAL,
+                              path_buf, val, msdp->rec_user_data);
+        } else if (tag == TELNETTY_MSDP_TABLE_OPEN || tag == TELNETTY_MSDP_ARRAY_OPEN) {
+            BUILD_PATH();
+            msdp->rec_handler(ctx, depth,
+                tag == TELNETTY_MSDP_TABLE_OPEN
+                    ? TELNETTY_MSDP_EV_TABLE_OPEN
+                    : TELNETTY_MSDP_EV_ARRAY_OPEN,
+                path_buf, NULL, msdp->rec_user_data);
+            i++;
+            if (depth + 1 >= TELNETTY_MSDP_MAX_DEPTH) {
+                telnetty_report_error(ctx, TELNETTY_ERR_PROTOCOL,
+                                      "MSDP nesting exceeds max depth");
+                return;
+            }
+            depth++;
+        } else if (tag == TELNETTY_MSDP_TABLE_CLOSE || tag == TELNETTY_MSDP_ARRAY_CLOSE) {
+            if (depth > 0) { depth--; stack[depth] = NULL; }
+            BUILD_PATH();
+            msdp->rec_handler(ctx, depth,
+                tag == TELNETTY_MSDP_TABLE_CLOSE
+                    ? TELNETTY_MSDP_EV_TABLE_CLOSE
+                    : TELNETTY_MSDP_EV_ARRAY_CLOSE,
+                path_buf, NULL, msdp->rec_user_data);
+            i++;
+        } else {
+            i++;
+        }
+    }
+    #undef BUILD_PATH
+}
+
 static void telnetty_msdp_sb(
     telnetty_context_t* ctx, uint8_t option,
     const uint8_t* data, size_t length, void* user_data
@@ -683,6 +827,14 @@ static void telnetty_msdp_sb(
     (void)option;
     telnetty_msdp_data_t* msdp = (telnetty_msdp_data_t*)user_data;
     if (!msdp || !data) return;
+
+    /* Recursive pass (structured) — runs when a recursive handler is set. */
+    telnetty__msdp_walk_recursive(ctx, msdp, data, length);
+
+    /* Flat pass (legacy compatibility) — always runs when a flat handler
+     * is set, so existing callers see the same var/val stream they always
+     * did even when a recursive handler is also registered. */
+    if (!msdp->handler) return;
     size_t i = 0;
     while (i < length) {
         if (data[i] != TELNETTY_MSDP_VAR) { i++; continue; }
@@ -705,9 +857,22 @@ static void telnetty_msdp_sb(
             memcpy(val, data + vls, vln);
             val[vln] = '\0';
         }
-        if (msdp->handler)
-            msdp->handler(ctx, var, val, msdp->user_data);
+        msdp->handler(ctx, var, val, msdp->user_data);
     }
+}
+
+static TELNETTY_UNUSED int telnetty_msdp_set_recursive_callback(
+    telnetty_context_t* ctx,
+    telnetty_msdp_recursive_callback_t cb,
+    void* user_data
+) {
+    if (!ctx) return -1;
+    telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_MSDP];
+    if (!opt || !opt->user_data) return -1;
+    telnetty_msdp_data_t* d = (telnetty_msdp_data_t*)opt->user_data;
+    d->rec_handler = cb;
+    d->rec_user_data = user_data;
+    return 0;
 }
 
 static int telnetty_enable_msdp(

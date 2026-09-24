@@ -1073,6 +1073,27 @@ static TELNETTY_UNUSED int telnetty_enable_eor(telnetty_context_t* ctx) {
 #define TELNETTY_LM_FORWARDMASK 2
 #define TELNETTY_LM_SLC      3
 
+/* RFC 1184 LINEMODE MODE bits */
+#define TELNETTY_LM_MODE_EDIT       0x01
+#define TELNETTY_LM_MODE_TRAPSIG    0x02
+#define TELNETTY_LM_MODE_ACK        0x04
+#define TELNETTY_LM_MODE_SOFT_TAB   0x08
+#define TELNETTY_LM_MODE_LIT_ECHO   0x10
+
+/* RFC 1184 SLC function codes (RFC 1184 §5.3). We store all 30 defined
+ * function slots plus a small headroom. */
+#define TELNETTY_SLC_NFUNCS         31
+
+/* SLC flag bits (level in low 2 bits, modifiers in high) */
+#define TELNETTY_SLC_NOSUPPORT  0x00
+#define TELNETTY_SLC_CANTCHANGE 0x01
+#define TELNETTY_SLC_VARIABLE   0x02
+#define TELNETTY_SLC_DEFAULT    0x03
+#define TELNETTY_SLC_LEVELBITS  0x03
+#define TELNETTY_SLC_ACK        0x80
+#define TELNETTY_SLC_FLUSHIN    0x40
+#define TELNETTY_SLC_FLUSHOUT   0x20
+
 typedef struct {
     char tx[32];
     char rx[32];
@@ -1084,9 +1105,16 @@ typedef struct {
 } telnetty_lflow_data_t;
 
 typedef struct {
+    uint8_t flags;     /* Latest SLC flags for this function; 0 = unset */
+    uint8_t value;     /* Character value the peer bound to this function */
+} telnetty_slc_entry_t;
+
+typedef struct {
     int mode;          /* LINEMODE MODE byte, or -1 */
-    uint8_t slc[32];   /* last SLC payload, truncated */
+    uint8_t slc[32];   /* Legacy: last SLC payload snapshot, truncated */
     size_t slc_len;
+    telnetty_slc_entry_t slc_table[TELNETTY_SLC_NFUNCS];
+    int slc_updates;   /* Number of SLC triples applied since enable */
 } telnetty_linemode_data_t;
 
 static void telnetty_tspeed_free(void* p) { TELNETTY_OPTIONS_FREE(p); }
@@ -1210,21 +1238,143 @@ static TELNETTY_UNUSED int telnetty_get_flow(telnetty_context_t* ctx) {
     return fd ? fd->last : -1;
 }
 
+/* Reply to a LINEMODE MODE offer with the mode byte plus MODE_ACK, so
+ * the peer knows we honored its edit/trapsig choices. Idempotent: if the
+ * peer already set the ACK bit it's re-asserting, and we still echo. */
+static void telnetty__linemode_send_mode_ack(telnetty_context_t* ctx, uint8_t mode) {
+    uint8_t reply[2];
+    reply[0] = TELNETTY_LM_MODE;
+    reply[1] = (uint8_t)(mode | TELNETTY_LM_MODE_ACK);
+    telnetty_send_subnegotiation(ctx, TELNETTY_TELOPT_LINEMODE, reply, 2);
+}
+
+/* Reply to an SLC frame by echoing every triple back with the ACK bit set
+ * (RFC 1184 §5.5). Called from the SB handler after we've stored the
+ * peer's triples in slc_table. */
+static void telnetty__linemode_send_slc_ack(
+    telnetty_context_t* ctx,
+    const uint8_t* triples, size_t triple_count
+) {
+    if (triple_count == 0) return;
+    /* 1 byte SLC tag + 3 bytes per triple. Cap at 128 triples per frame
+     * to stay well under any SB length limit. */
+    if (triple_count > 128) triple_count = 128;
+    uint8_t buf[1 + 128 * 3];
+    size_t off = 0;
+    buf[off++] = TELNETTY_LM_SLC;
+    for (size_t i = 0; i < triple_count; i++) {
+        buf[off++] = triples[i * 3 + 0];
+        buf[off++] = (uint8_t)(triples[i * 3 + 1] | TELNETTY_SLC_ACK);
+        buf[off++] = triples[i * 3 + 2];
+    }
+    telnetty_send_subnegotiation(ctx, TELNETTY_TELOPT_LINEMODE, buf, off);
+}
+
 static void telnetty_linemode_sb(
     telnetty_context_t* ctx, uint8_t option,
     const uint8_t* data, size_t length, void* user_data
 ) {
-    (void)ctx; (void)option;
+    (void)option;
     telnetty_linemode_data_t* lm = (telnetty_linemode_data_t*)user_data;
-    if (!lm || length < 1) return;
-    if (data[0] == TELNETTY_LM_MODE && length >= 2)
+    if (!lm || !data || length < 1) return;
+
+    switch (data[0]) {
+    case TELNETTY_LM_MODE:
+        if (length < 2) return;
         lm->mode = data[1];
-    else if (data[0] == TELNETTY_LM_SLC) {
+        /* If this MODE offer does NOT already carry ACK, echo it back with
+         * ACK set. Peers that sent an ACK are confirming our earlier one
+         * and don't want a second round. */
+        if (ctx && !(data[1] & TELNETTY_LM_MODE_ACK)) {
+            telnetty__linemode_send_mode_ack(ctx, data[1]);
+        }
+        break;
+
+    case TELNETTY_LM_SLC: {
+        /* Legacy blob snapshot (kept for backward-compat callers). */
         size_t n = length - 1;
         if (n > sizeof(lm->slc)) n = sizeof(lm->slc);
         memcpy(lm->slc, data + 1, n);
         lm->slc_len = n;
+
+        /* SLC payload is a stream of {func, flags, value} triples per
+         * RFC 1184 §5.3. Ignore trailing partial triples defensively. */
+        const uint8_t* p = data + 1;
+        size_t rem = length - 1;
+        size_t triples = rem / 3;
+        /* Buffer for the ACK echo. Bounded by triples. */
+        uint8_t ack_buf[128 * 3];
+        size_t ack_n = 0;
+
+        for (size_t i = 0; i < triples; i++) {
+            uint8_t func  = p[i * 3 + 0];
+            uint8_t flags = p[i * 3 + 1];
+            uint8_t value = p[i * 3 + 2];
+
+            if (func < TELNETTY_SLC_NFUNCS) {
+                lm->slc_table[func].flags = flags;
+                lm->slc_table[func].value = value;
+                lm->slc_updates++;
+            }
+
+            /* Peer-initiated triples (ACK not yet set) get echoed with
+             * ACK; peer-ACK triples close a prior exchange and need no
+             * reply. */
+            if (!(flags & TELNETTY_SLC_ACK) && ack_n + 3 <= sizeof(ack_buf)) {
+                ack_buf[ack_n++] = func;
+                ack_buf[ack_n++] = flags;
+                ack_buf[ack_n++] = value;
+            }
+        }
+
+        if (ctx && ack_n > 0) {
+            telnetty__linemode_send_slc_ack(ctx, ack_buf, ack_n / 3);
+        }
+        break;
     }
+
+    case TELNETTY_LM_FORWARDMASK:
+        /* Accepted but stored opaquely — libtelnet does the same. Users
+         * who need bitmask editing hook the SB handler directly. */
+        break;
+
+    default:
+        /* Unknown LINEMODE subcommand — quietly drop. RFC 1184 leaves
+         * this "should be ignored". */
+        break;
+    }
+}
+
+/**
+ * Fetch the LINEMODE SLC entry for one function code (RFC 1184 §5.3).
+ * Returns 0 on hit, -1 if `func` is out of range or LINEMODE is not
+ * enabled. Fills *flags and *value from the last triple the peer sent
+ * for this function.
+ */
+static TELNETTY_UNUSED int telnetty_get_slc(
+    telnetty_context_t* ctx, uint8_t func,
+    uint8_t* flags, uint8_t* value
+) {
+    if (!ctx || func >= TELNETTY_SLC_NFUNCS) return -1;
+    telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_LINEMODE];
+    telnetty_linemode_data_t* lm = (opt && opt->user_data)
+        ? (telnetty_linemode_data_t*)opt->user_data : NULL;
+    if (!lm) return -1;
+    if (flags) *flags = lm->slc_table[func].flags;
+    if (value) *value = lm->slc_table[func].value;
+    return 0;
+}
+
+/**
+ * Send a MODE offer to the peer with the given mode bits. The peer must
+ * reply with the same bits and MODE_ACK set to confirm.
+ */
+static TELNETTY_UNUSED int telnetty_linemode_send_mode(
+    telnetty_context_t* ctx, uint8_t mode
+) {
+    if (!ctx) return -1;
+    uint8_t sb[2] = { TELNETTY_LM_MODE, mode };
+    return telnetty_send_subnegotiation(ctx, TELNETTY_TELOPT_LINEMODE, sb, 2);
 }
 
 static TELNETTY_UNUSED int telnetty_enable_linemode(telnetty_context_t* ctx) {

@@ -102,7 +102,12 @@ typedef struct telnetty_buffer_pool {
 } telnetty_buffer_pool_t;
 
 /* Pool flags */
-#define TELNETTY_POOL_FLAG_THREAD_SAFE 0x01    /**< Thread-safe pool */
+#define TELNETTY_POOL_FLAG_THREAD_SAFE 0x01    /**< [DEPRECATED, NO EFFECT]
+                                                * One telnetty_context_t per
+                                                * thread — the library does
+                                                * not lock on this flag.
+                                                * Retained for source
+                                                * compatibility. */
 #define TELNETTY_POOL_FLAG_ZERO_MEMORY 0x02    /**< Zero memory on allocation */
 
 /* Buffer statistics */

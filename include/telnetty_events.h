@@ -124,7 +124,12 @@ typedef struct {
 } telnetty_event_queue_t;
 
 /* Queue flags */
-#define TELNETTY_QUEUE_FLAG_THREAD_SAFE   0x01    /**< Thread-safe queue */
+#define TELNETTY_QUEUE_FLAG_THREAD_SAFE   0x01    /**< [DEPRECATED, NO EFFECT]
+                                                   * One telnetty_context_t
+                                                   * per thread — the library
+                                                   * does not lock on this
+                                                   * flag. Retained for
+                                                   * source compatibility. */
 #define TELNETTY_QUEUE_FLAG_DROP_OLDEST   0x02    /**< Drop oldest on overflow */
 #define TELNETTY_QUEUE_FLAG_DROP_NEWEST   0x04    /**< Drop newest on overflow */
 

@@ -98,6 +98,28 @@ typedef enum {
     TELNETTY_ERR_COMPRESSION
 } telnetty_error_t;
 
+/* Log severity levels for telnetty_set_log_callback. TRACE is per-byte noisy;
+ * DEBUG is per-frame; INFO is per-session milestone; WARN is a recoverable
+ * anomaly; ERROR mirrors an EVENT_ERROR fire. Numerical order matters: the
+ * callback fires only for messages at or above the threshold set at register
+ * time. */
+typedef enum {
+    TELNETTY_LOG_TRACE = 0,
+    TELNETTY_LOG_DEBUG = 1,
+    TELNETTY_LOG_INFO  = 2,
+    TELNETTY_LOG_WARN  = 3,
+    TELNETTY_LOG_ERROR = 4
+} telnetty_log_level_t;
+
+struct telnetty_context;
+typedef void (*telnetty_log_callback_t)(
+    struct telnetty_context* ctx,
+    telnetty_log_level_t level,
+    const char* category,
+    const char* message,
+    void* user_data
+);
+
 /* Branch hints for the hot IAC scanner. Fall back to no-ops elsewhere. */
 #ifndef TELNETTY_LIKELY
 #if defined(__GNUC__) || defined(__clang__)
@@ -371,6 +393,10 @@ struct telnetty_option {
     void* user_data;                    /**< User data for handlers */
     void (*user_data_free)(void*);      /**< Optional freer for user_data */
     struct telnetty_option* next;       /**< Next option in list */
+    uint64_t deadline_ms;               /**< Wall-clock deadline for in-flight
+                                         *   negotiation (0 = no deadline).
+                                         *   Fires EVENT_ERROR/TELNETTY_ERR_TIMEOUT
+                                         *   when telnetty_tick sees now_ms >= deadline. */
 };
 
 /* ============================================================================
@@ -434,6 +460,30 @@ struct telnetty_context {
      * telnetty_color_init / _attach installs a telnetty_color_state_t). */
     void* color_state;
     void (*color_state_free)(void*);
+
+    /* Structured logging sink. NULL by default; when set, telnetty_log() and
+     * the internal TELNETTY_LOG(...) macro route messages here instead of
+     * fprintf(stderr,...). Only messages at or above log_threshold fire. */
+    telnetty_log_callback_t log_cb;
+    void* log_user_data;
+    telnetty_log_level_t log_threshold;
+
+    /* Negotiation timeout (item 30). Zero disables. Whenever send_option
+     * pushes an option into a WANT* state, we stamp opt->deadline_ms with
+     * now_ms + this. telnetty_tick(ctx, now_ms) is the caller's clock. */
+    uint32_t negotiation_timeout_ms;
+    uint64_t now_ms;                    /**< Last tick timestamp. 0 = never ticked. */
+
+    /* Rate limits (item 31). Token-bucket state per byte-stream and per-IAC
+     * frame. Rates in units-per-second; zero disables that bucket. Requires
+     * telnetty_tick() to advance now_ms — an unticked context skips
+     * enforcement so callers who never opt in pay nothing. */
+    uint32_t rate_bytes_per_sec;
+    uint32_t rate_iac_per_sec;
+    int64_t  bytes_tokens;              /**< Signed so an over-limit burst
+                                         *   goes negative and we know to trip. */
+    int64_t  iac_tokens;
+    uint64_t rate_refill_ms;            /**< Last bucket refill timestamp. */
 };
 
 /* Context flags */
@@ -706,6 +756,82 @@ static inline TELNETTY_UNUSED telnetty_error_t telnetty_last_error(const telnett
     return ctx ? ctx->last_error : TELNETTY_ERR_INVAL;
 }
 
+/**
+ * Install a structured log sink. `cb` receives (level, category, message).
+ * `level` sets the *minimum* severity that fires the callback; a NULL `cb`
+ * clears the sink (messages fall silent — no stderr fallback). Category is
+ * a short static tag such as "core", "options", "mccp".
+ */
+static inline TELNETTY_UNUSED void telnetty_set_log_callback(
+    telnetty_context_t* ctx,
+    telnetty_log_level_t level,
+    telnetty_log_callback_t cb,
+    void* user_data
+) {
+    if (!ctx) return;
+    ctx->log_cb = cb;
+    ctx->log_user_data = user_data;
+    ctx->log_threshold = level;
+}
+
+/** Emit a formatted log line. Silently discards when no sink is set or the
+ *  level falls below the threshold — the format string is only rendered when
+ *  the sink will actually receive it. */
+static TELNETTY_UNUSED void telnetty_log(
+    telnetty_context_t* ctx,
+    telnetty_log_level_t level,
+    const char* category,
+    const char* fmt,
+    ...
+);
+
+/**
+ * Set the negotiation timeout in milliseconds. Zero (the default) disables
+ * timeouts entirely. Options currently mid-negotiation stay uncapped until
+ * they next enter a WANT* state after a fresh send_option — the timeout
+ * applies to future initiations, not retroactively.
+ */
+static inline TELNETTY_UNUSED void telnetty_set_negotiation_timeout(
+    telnetty_context_t* ctx,
+    uint32_t ms
+) {
+    if (ctx) ctx->negotiation_timeout_ms = ms;
+}
+
+/**
+ * Advance the context's monotonic clock. Callers drive this from their
+ * event loop (libuv timer, poll deadline, whatever). Options whose
+ * deadline_ms is non-zero and has expired fire EVENT_ERROR with
+ * TELNETTY_ERR_TIMEOUT and are cleared back to Q_NO on the timed-out side
+ * so the caller can retry cleanly. Also refills rate-limit buckets.
+ */
+static TELNETTY_UNUSED void telnetty_tick(
+    telnetty_context_t* ctx,
+    uint64_t now_ms
+);
+
+/**
+ * Configure inbound rate limits. `bytes_per_sec` caps total bytes fed
+ * through telnetty_process(); `iac_per_sec` caps IAC-prefixed frames
+ * (commands + option negotiations + SB). Zero disables that bucket.
+ * Enforcement requires the caller to be driving telnetty_tick(); an
+ * unticked context skips enforcement entirely. Trips fire EVENT_ERROR
+ * with TELNETTY_ERR_RATE_LIMIT and the offending bytes/frame are dropped.
+ */
+static inline TELNETTY_UNUSED void telnetty_set_rate_limit(
+    telnetty_context_t* ctx,
+    uint32_t bytes_per_sec,
+    uint32_t iac_per_sec
+) {
+    if (!ctx) return;
+    ctx->rate_bytes_per_sec = bytes_per_sec;
+    ctx->rate_iac_per_sec   = iac_per_sec;
+    /* Initial bucket = one second's worth so the first burst isn't a trip. */
+    ctx->bytes_tokens = (int64_t)bytes_per_sec;
+    ctx->iac_tokens   = (int64_t)iac_per_sec;
+    ctx->rate_refill_ms = ctx->now_ms;
+}
+
 /** Internal helper: record and dispatch an EVENT_ERROR. `msg` may be NULL. */
 static inline void telnetty_report_error(
     telnetty_context_t* ctx,
@@ -715,6 +841,10 @@ static inline void telnetty_report_error(
     if (!ctx) return;
     ctx->last_error = code;
     ctx->stats.errors++;
+    if (ctx->log_cb && ctx->log_threshold <= TELNETTY_LOG_ERROR) {
+        ctx->log_cb(ctx, TELNETTY_LOG_ERROR, "error", msg ? msg : "",
+                    ctx->log_user_data);
+    }
     if (ctx->config.flags & TELNETTY_FLAG_QUIET) return;
     telnetty_event_error_t e = { (int)code, msg };
     telnetty_event_data_union_t u = { .error = e };
@@ -730,7 +860,53 @@ static inline void telnetty_report_error(
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <errno.h>
+
+static TELNETTY_UNUSED void telnetty_log(
+    telnetty_context_t* ctx,
+    telnetty_log_level_t level,
+    const char* category,
+    const char* fmt,
+    ...
+) {
+    if (!ctx || !ctx->log_cb || level < ctx->log_threshold || !fmt) return;
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    ctx->log_cb(ctx, level, category ? category : "", buf, ctx->log_user_data);
+}
+
+static inline void telnetty__rate_refill(telnetty_context_t* ctx);
+
+static TELNETTY_UNUSED void telnetty_tick(telnetty_context_t* ctx, uint64_t now_ms) {
+    if (!ctx) return;
+    ctx->now_ms = now_ms;
+    telnetty__rate_refill(ctx);
+    for (int i = 0; i < 256; i++) {
+        telnetty_option_t* opt = ctx->options[i];
+        if (!opt || !opt->deadline_ms) continue;
+        if (now_ms < opt->deadline_ms) continue;
+
+        /* Timed out. Drop back to Q_NO on any pending side so the caller
+         * can re-initiate cleanly. */
+        uint8_t us  = opt->us, him = opt->him;
+        int us_pending  = (us  == TELNETTY_Q_WANTYES || us  == TELNETTY_Q_WANTNO ||
+                           us  == TELNETTY_Q_WANTYES_OP || us  == TELNETTY_Q_WANTNO_OP);
+        int him_pending = (him == TELNETTY_Q_WANTYES || him == TELNETTY_Q_WANTNO ||
+                           him == TELNETTY_Q_WANTYES_OP || him == TELNETTY_Q_WANTNO_OP);
+        if (us_pending)  opt->us  = TELNETTY_Q_NO;
+        if (him_pending) opt->him = TELNETTY_Q_NO;
+        opt->deadline_ms = 0;
+
+        telnetty_report_error(ctx, TELNETTY_ERR_TIMEOUT,
+                              "option negotiation timed out");
+    }
+}
 
 /* Memory allocation wrappers */
 #ifndef TELNETTY_MALLOC
@@ -1095,12 +1271,62 @@ static TELNETTY_UNUSED void telnetty_destroy(telnetty_context_t* ctx) {
 /* Forward declaration for helper function */
 static TELNETTY_UNUSED int telnetty_process_byte(telnetty_context_t* ctx, uint8_t byte);
 
+/* Refill token buckets based on elapsed ms since last refill. Caps at one
+ * full second's worth so an idle connection can't stockpile burst credit. */
+static inline void telnetty__rate_refill(telnetty_context_t* ctx) {
+    if (!ctx->now_ms) return;
+    if (!ctx->rate_refill_ms) { ctx->rate_refill_ms = ctx->now_ms; return; }
+    if (ctx->now_ms <= ctx->rate_refill_ms) return;
+    uint64_t elapsed = ctx->now_ms - ctx->rate_refill_ms;
+    if (ctx->rate_bytes_per_sec) {
+        int64_t add = (int64_t)((elapsed * ctx->rate_bytes_per_sec) / 1000ULL);
+        ctx->bytes_tokens += add;
+        if (ctx->bytes_tokens > (int64_t)ctx->rate_bytes_per_sec)
+            ctx->bytes_tokens = (int64_t)ctx->rate_bytes_per_sec;
+    }
+    if (ctx->rate_iac_per_sec) {
+        int64_t add = (int64_t)((elapsed * ctx->rate_iac_per_sec) / 1000ULL);
+        ctx->iac_tokens += add;
+        if (ctx->iac_tokens > (int64_t)ctx->rate_iac_per_sec)
+            ctx->iac_tokens = (int64_t)ctx->rate_iac_per_sec;
+    }
+    ctx->rate_refill_ms = ctx->now_ms;
+}
+
 static int telnetty_process(
     telnetty_context_t* ctx,
     const uint8_t* TELNETTY_RESTRICT data,
     size_t length
 ) {
     if (!ctx || !data || length == 0) return 0;
+
+    /* Rate limit: byte bucket. Enforcement only kicks in once the caller
+     * has driven telnetty_tick(); an unticked context skips it. */
+    if (ctx->now_ms && ctx->rate_bytes_per_sec) {
+        telnetty__rate_refill(ctx);
+        if (ctx->bytes_tokens < (int64_t)length) {
+            telnetty_report_error(ctx, TELNETTY_ERR_RATE_LIMIT,
+                                  "inbound byte rate exceeded");
+            /* Consume whatever tokens remain and drop the frame. */
+            if (ctx->bytes_tokens > 0) ctx->bytes_tokens = 0;
+            return 0;
+        }
+        ctx->bytes_tokens -= (int64_t)length;
+    }
+
+    /* Rate limit: IAC bucket — count IACs in this batch up front. */
+    if (ctx->now_ms && ctx->rate_iac_per_sec) {
+        telnetty__rate_refill(ctx);
+        int64_t iac_count = 0;
+        for (size_t k = 0; k < length; k++) if (data[k] == TELNETTY_IAC) iac_count++;
+        if (iac_count > ctx->iac_tokens) {
+            telnetty_report_error(ctx, TELNETTY_ERR_RATE_LIMIT,
+                                  "inbound IAC rate exceeded");
+            if (ctx->iac_tokens > 0) ctx->iac_tokens = 0;
+            return 0;
+        }
+        ctx->iac_tokens -= iac_count;
+    }
 
     int processed = 0;
     size_t i = 0;
@@ -1382,6 +1608,18 @@ static TELNETTY_UNUSED int telnetty_process_byte(telnetty_context_t* ctx, uint8_
             ctx->stats.options_negotiated++;
         }
 
+        /* Clear the pending deadline whenever both sides have settled to
+         * a terminal state (NO or YES). WANT* stays uncleared and can time
+         * out on the next tick. */
+        {
+            uint8_t us = opt->us, him = opt->him;
+            int us_pending  = (us  == TELNETTY_Q_WANTYES || us  == TELNETTY_Q_WANTNO ||
+                               us  == TELNETTY_Q_WANTYES_OP || us  == TELNETTY_Q_WANTNO_OP);
+            int him_pending = (him == TELNETTY_Q_WANTYES || him == TELNETTY_Q_WANTNO ||
+                               him == TELNETTY_Q_WANTYES_OP || him == TELNETTY_Q_WANTNO_OP);
+            if (!us_pending && !him_pending) opt->deadline_ms = 0;
+        }
+
         return 1;
     }
     
@@ -1635,6 +1873,20 @@ static int telnetty_send_option(
     default:
         telnetty_send_negotiate_raw(ctx, command, option);
         break;
+    }
+
+    /* Stamp a deadline whenever either side is now mid-negotiation (WANT*)
+     * and no deadline is set. Idempotent: an already-pending option keeps
+     * its earlier deadline until it settles. */
+    if (ctx->negotiation_timeout_ms && !opt->deadline_ms) {
+        uint8_t us = opt->us, him = opt->him;
+        int us_pending  = (us  == TELNETTY_Q_WANTYES || us  == TELNETTY_Q_WANTNO ||
+                           us  == TELNETTY_Q_WANTYES_OP || us  == TELNETTY_Q_WANTNO_OP);
+        int him_pending = (him == TELNETTY_Q_WANTYES || him == TELNETTY_Q_WANTNO ||
+                           him == TELNETTY_Q_WANTYES_OP || him == TELNETTY_Q_WANTNO_OP);
+        if (us_pending || him_pending) {
+            opt->deadline_ms = ctx->now_ms + (uint64_t)ctx->negotiation_timeout_ms;
+        }
     }
 
     return 0;
