@@ -425,15 +425,21 @@ static int telnetty_gmcp_send_supports(
 
 /* MTTS flags */
 typedef enum {
-    TELNETTY_MTTS_FLAG_ANSI = 1 << 0,           /**< ANSI color support */
-    TELNETTY_MTTS_FLAG_VT100 = 1 << 1,          /**< VT100 emulation */
-    TELNETTY_MTTS_FLAG_UTF8 = 1 << 2,           /**< UTF-8 support */
-    TELNETTY_MTTS_FLAG_256COLORS = 1 << 3,      /**< 256-color support */
+    /* Canonical MTTS bit assignments per the MTTS 3.0 standard. Do NOT
+     * renumber existing values — MUDs match on the raw bit weight, not
+     * the enum name, so a client that advertises "MTTS 265" (=1|8|256)
+     * must land on ANSI | 256COLORS | TRUECOLOR everywhere. */
+    TELNETTY_MTTS_FLAG_ANSI          = 1 << 0,  /**< ANSI color support */
+    TELNETTY_MTTS_FLAG_VT100         = 1 << 1,  /**< VT100 emulation */
+    TELNETTY_MTTS_FLAG_UTF8          = 1 << 2,  /**< UTF-8 support */
+    TELNETTY_MTTS_FLAG_256COLORS     = 1 << 3,  /**< 256-color support */
     TELNETTY_MTTS_FLAG_MOUSETRACKING = 1 << 4,  /**< Mouse tracking */
-    TELNETTY_MTTS_FLAG_COLORPALETTE = 1 << 5,   /**< Color palette */
-    TELNETTY_MTTS_FLAG_SCREENREADER = 1 << 6,   /**< Screen reader */
-    TELNETTY_MTTS_FLAG_PROXY = 1 << 7,          /**< Proxy connection */
-    TELNETTY_MTTS_FLAG_TRUECOLOR = 1 << 8       /**< True color support */
+    TELNETTY_MTTS_FLAG_COLORPALETTE  = 1 << 5,  /**< OSC color-palette query */
+    TELNETTY_MTTS_FLAG_SCREENREADER  = 1 << 6,  /**< Screen reader / accessibility */
+    TELNETTY_MTTS_FLAG_PROXY         = 1 << 7,  /**< Client is a proxy */
+    TELNETTY_MTTS_FLAG_TRUECOLOR     = 1 << 8,  /**< 24-bit truecolor SGR */
+    TELNETTY_MTTS_FLAG_MNES          = 1 << 9,  /**< MUD NEW-ENVIRON Standard */
+    TELNETTY_MTTS_FLAG_MSLP          = 1 << 10  /**< Mud Server Link Protocol */
 } telnetty_mtts_flag_t;
 
 /* MTTS data structure. Trailing fields (cycle, local_flags, terminal_type)
@@ -627,6 +633,63 @@ static int telnetty_mssp_set_standard_vars(
     int server_port,
     int player_count,
     int max_players
+);
+
+/* ============================================================================
+ * MSP (MUD Sound Protocol) — TELOPT 90
+ *
+ * Peer offers TELOPT 90 (WILL). We ACK with DO. From then on, MSP triggers
+ * arrive INLINE in the ordinary data stream as `!!SOUND(...)` and
+ * `!!MUSIC(...)` sequences terminated by the closing paren, e.g.
+ *
+ *   !!SOUND(cast.wav V=75 L=1 P=50 U=http://foo/wav/ T=magic)
+ *
+ * We scan every DATA event before it reaches the app callback, extract
+ * matching triggers, and fire them through a dedicated MSP callback.
+ * ============================================================================ */
+
+#define TELNETTY_TELOPT_MSP 90
+
+typedef enum {
+    TELNETTY_MSP_KIND_SOUND = 0,
+    TELNETTY_MSP_KIND_MUSIC = 1
+} telnetty_msp_kind_t;
+
+/* Parsed MSP trigger. Fields point into caller-owned storage on the
+ * dispatch — copy anything you need to keep past the callback. */
+typedef struct {
+    telnetty_msp_kind_t kind;
+    const char* file;    /* filename or "Off" for cancel */
+    int volume;          /* V=... (0-100), or -1 if absent */
+    int loops;           /* L=... (0, -1, or n), or -1 if absent */
+    int priority;        /* P=... (0-100), or -1 if absent */
+    int cont;            /* C=... (0/1), or -1 if absent (MUSIC only) */
+    const char* type;    /* T=... category, or NULL */
+    const char* url;     /* U=... base url, or NULL */
+} telnetty_msp_trigger_t;
+
+typedef void (*telnetty_msp_callback_t)(
+    telnetty_context_t* ctx,
+    const telnetty_msp_trigger_t* trigger,
+    void* user_data
+);
+
+typedef struct {
+    telnetty_msp_callback_t cb;
+    void* user_data;
+    bool enabled;
+} telnetty_msp_data_t;
+
+/**
+ * Enable MSP: register the TELOPT 90 handler and install a data-stream
+ * hook that scans for !!SOUND / !!MUSIC triggers before they reach the
+ * app-level DATA callback. Triggers are consumed (removed from the DATA
+ * payload) and dispatched to `cb`. Everything else passes through.
+ */
+static TELNETTY_UNUSED int telnetty_enable_msp(
+    telnetty_context_t* ctx,
+    telnetty_msp_callback_t cb,
+    void* user_data
 );
 
 /* ============================================================================
@@ -1702,8 +1765,179 @@ static int telnetty_mssp_set_standard_vars(
         snprintf(max_str, sizeof(max_str), "%d", max_players);
         telnetty_mssp_add(ctx, "MAXPLAYERS", max_str);
     }
-    
+
     return 0;
+}
+
+/* ============================================================================
+ * MSP (MUD Sound Protocol) — TELOPT 90 implementation
+ * ============================================================================ */
+
+static void telnetty_msp_data_free(void* p) { TELNETTY_MUD_FREE(p); }
+
+static telnetty_msp_data_t* telnetty__msp_of(telnetty_context_t* ctx) {
+    if (!ctx) return NULL;
+    telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_MSP];
+    return (opt && opt->user_data) ? (telnetty_msp_data_t*)opt->user_data : NULL;
+}
+
+/* Parse a single K=V argument. `key` is one uppercase letter; value is
+ * the token that follows up to space or ')'. Numeric args land in *ival;
+ * string args (T=, U=) copy into out with size cap. */
+static int telnetty__msp_arg(
+    const char* p, const char* end,
+    char key, int* ival, char* out, size_t out_sz
+) {
+    if ((size_t)(end - p) < 2 || p[0] != key || p[1] != '=') return 0;
+    p += 2;
+    if (ival) {
+        int v = 0, sign = 1;
+        if (p < end && *p == '-') { sign = -1; p++; }
+        while (p < end && *p >= '0' && *p <= '9') {
+            v = v * 10 + (*p - '0'); p++;
+        }
+        *ival = v * sign;
+    }
+    if (out) {
+        size_t n = 0;
+        while (p < end && *p != ' ' && *p != ')' && n + 1 < out_sz) {
+            out[n++] = *p++;
+        }
+        out[n] = '\0';
+    }
+    return 1;
+}
+
+/* Scan `data` for one !!SOUND(...) or !!MUSIC(...) trigger starting at
+ * `start`. Returns the offset just past the closing ')' on match, or 0
+ * on no match. Fills *trig on match. `file_buf`, `type_buf`, `url_buf`
+ * are caller-supplied scratch storage. */
+static size_t telnetty__msp_parse_one(
+    const char* data, size_t len, size_t start,
+    telnetty_msp_trigger_t* trig,
+    char* file_buf, size_t file_sz,
+    char* type_buf, size_t type_sz,
+    char* url_buf,  size_t url_sz
+) {
+    if (start + 8 > len) return 0;
+    if (data[start] != '!' || data[start + 1] != '!') return 0;
+    telnetty_msp_kind_t kind;
+    size_t hdr;
+    if (memcmp(data + start + 2, "SOUND(", 6) == 0) {
+        kind = TELNETTY_MSP_KIND_SOUND; hdr = 8;
+    } else if (memcmp(data + start + 2, "MUSIC(", 6) == 0) {
+        kind = TELNETTY_MSP_KIND_MUSIC; hdr = 8;
+    } else {
+        return 0;
+    }
+    const char* p = data + start + hdr;
+    const char* end = data + len;
+    /* Locate closing paren (no nested parens per spec). */
+    const char* rp = (const char*)memchr(p, ')', (size_t)(end - p));
+    if (!rp) return 0;
+
+    memset(trig, 0, sizeof(*trig));
+    trig->kind = kind;
+    trig->volume = trig->loops = trig->priority = trig->cont = -1;
+
+    /* First token: filename (or "Off") — up to first space or ')'. */
+    size_t fn = 0;
+    while (p < rp && *p != ' ' && fn + 1 < file_sz) {
+        file_buf[fn++] = *p++;
+    }
+    file_buf[fn] = '\0';
+    trig->file = file_buf;
+
+    /* Remaining tokens: V=/L=/P=/C=/T=/U=. */
+    while (p < rp) {
+        while (p < rp && *p == ' ') p++;
+        if (p >= rp) break;
+        if      (telnetty__msp_arg(p, rp, 'V', &trig->volume,   NULL, 0));
+        else if (telnetty__msp_arg(p, rp, 'L', &trig->loops,    NULL, 0));
+        else if (telnetty__msp_arg(p, rp, 'P', &trig->priority, NULL, 0));
+        else if (telnetty__msp_arg(p, rp, 'C', &trig->cont,     NULL, 0));
+        else if (telnetty__msp_arg(p, rp, 'T', NULL, type_buf, type_sz)) {
+            trig->type = type_buf;
+        }
+        else if (telnetty__msp_arg(p, rp, 'U', NULL, url_buf, url_sz)) {
+            trig->url = url_buf;
+        }
+        /* Skip to next space. */
+        while (p < rp && *p != ' ') p++;
+    }
+    return (size_t)(rp - data) + 1;
+}
+
+/* HIGH-priority extended DATA handler: peek the payload for MSP triggers
+ * and dispatch each. The original DATA callback still fires afterward
+ * with the full untouched payload (we don't rewrite in-flight data). */
+static void telnetty__msp_data_hook(
+    telnetty_context_t* ctx, telnetty_event_type_t ev,
+    const telnetty_event_data_union_t* d, void* ud,
+    telnetty_event_priority_t prio
+) {
+    (void)prio;
+    if (ev != TELNETTY_EVENT_DATA || !d || d->data.length < 4) return;
+    telnetty_msp_data_t* m = (telnetty_msp_data_t*)ud;
+    if (!m || !m->cb) return;
+
+    const char* text = (const char*)d->data.data;
+    size_t len = d->data.length;
+    /* Scan every '!' looking for "!!SOUND(" / "!!MUSIC(". */
+    for (size_t i = 0; i + 2 < len; ) {
+        const char* bang = (const char*)memchr(text + i, '!', len - i);
+        if (!bang) break;
+        size_t off = (size_t)(bang - text);
+        telnetty_msp_trigger_t trig;
+        char fbuf[256], tbuf[64], ubuf[256];
+        size_t nxt = telnetty__msp_parse_one(text, len, off, &trig,
+                                             fbuf, sizeof(fbuf),
+                                             tbuf, sizeof(tbuf),
+                                             ubuf, sizeof(ubuf));
+        if (nxt) {
+            m->cb(ctx, &trig, m->user_data);
+            i = nxt;
+        } else {
+            i = off + 1;
+        }
+    }
+}
+
+static void telnetty_msp_handler(
+    telnetty_context_t* ctx, uint8_t option, uint8_t command, void* user_data
+) {
+    (void)ctx; (void)option; (void)command;
+    telnetty_msp_data_t* m = (telnetty_msp_data_t*)user_data;
+    if (!m) return;
+    if (command == TELNETTY_DO || command == TELNETTY_WILL) {
+        m->enabled = true;
+    } else if (command == TELNETTY_DONT || command == TELNETTY_WONT) {
+        m->enabled = false;
+    }
+}
+
+static TELNETTY_UNUSED int telnetty_enable_msp(
+    telnetty_context_t* ctx,
+    telnetty_msp_callback_t cb,
+    void* user_data
+) {
+    if (!ctx) return -1;
+    telnetty_msp_data_t* m = (telnetty_msp_data_t*)TELNETTY_MUD_MALLOC(sizeof(*m));
+    if (!m) return -1;
+    memset(m, 0, sizeof(*m));
+    m->cb = cb;
+    m->user_data = user_data;
+
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_MSP, 1, 1);
+    telnetty_register_option(ctx, TELNETTY_TELOPT_MSP,
+                             telnetty_msp_handler, NULL);
+    telnetty_option_set_user_data(ctx, TELNETTY_TELOPT_MSP, m,
+                                  telnetty_msp_data_free);
+    /* HIGH-priority DATA scanner fires before the app's own handler. */
+    telnetty_register_event_handler(ctx, TELNETTY_EVENT_DATA,
+                                    telnetty__msp_data_hook, m,
+                                    TELNETTY_PRIORITY_HIGH);
+    return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_MSP);
 }
 
 #endif /* TELNETTY_MUD_IMPLEMENTATION */

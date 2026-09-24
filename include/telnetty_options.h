@@ -390,6 +390,38 @@ static const char* telnetty_get_environ(
     const char* name
 );
 
+/* MNES (MUD NEW-ENVIRON Standard) — well-known variable names carried
+ * over the existing RFC 1572 NEW-ENVIRON option (TELNETTY_TELOPT_NEW_ENVIRON).
+ * The spec defines a canonical vocabulary so MUD clients and servers
+ * exchange a shared set of metadata: client name, terminal type,
+ * language, screen reader accessibility, and so on. No new option code —
+ * pass these strings into `telnetty_send_environ` on the SEND request. */
+#define TELNETTY_MNES_CLIENT_NAME      "CLIENT_NAME"
+#define TELNETTY_MNES_CLIENT_VERSION   "CLIENT_VERSION"
+#define TELNETTY_MNES_TERMINAL_TYPE    "TERMINAL_TYPE"
+#define TELNETTY_MNES_CHARSET          "CHARSET"
+#define TELNETTY_MNES_MTTS             "MTTS"
+#define TELNETTY_MNES_XTERM_TITLE      "XTERM_TITLE"
+#define TELNETTY_MNES_SCREEN_READER    "SCREEN_READER"
+#define TELNETTY_MNES_IPADDRESS        "IPADDRESS"
+#define TELNETTY_MNES_UTF_8            "UTF-8"
+
+/**
+ * Convenience wrapper that pushes the six most-often-requested MNES
+ * variables into NEW-ENVIRON in one call. Any parameter may be NULL to
+ * skip that var. mtts is a bitfield encoded as its decimal representation.
+ * Requires telnetty_enable_environ() to have run first.
+ */
+static TELNETTY_UNUSED int telnetty_send_mnes(
+    telnetty_context_t* ctx,
+    const char* client_name,
+    const char* client_version,
+    const char* terminal_type,
+    const char* charset,
+    uint32_t    mtts,
+    int         screen_reader
+);
+
 /* ============================================================================
  * Charset Option (RFC 2066)
  * ============================================================================ */
@@ -841,10 +873,42 @@ static const char* telnetty_get_environ(
     const char* name
 ) {
     if (!ctx || !name) return NULL;
-    
+
     /* This would need to be integrated with the option tracker system */
     /* For now, return NULL */
     return NULL;
+}
+
+static TELNETTY_UNUSED int telnetty_send_mnes(
+    telnetty_context_t* ctx,
+    const char* client_name,
+    const char* client_version,
+    const char* terminal_type,
+    const char* charset,
+    uint32_t    mtts,
+    int         screen_reader
+) {
+    if (!ctx) return -1;
+    /* At most 6 slots; skip NULLs. */
+    const char* names[6];
+    const char* values[6];
+    size_t n = 0;
+    char mtts_buf[16];
+    char sr_buf[4];
+    if (client_name)    { names[n] = TELNETTY_MNES_CLIENT_NAME;    values[n++] = client_name; }
+    if (client_version) { names[n] = TELNETTY_MNES_CLIENT_VERSION; values[n++] = client_version; }
+    if (terminal_type)  { names[n] = TELNETTY_MNES_TERMINAL_TYPE;  values[n++] = terminal_type; }
+    if (charset)        { names[n] = TELNETTY_MNES_CHARSET;        values[n++] = charset; }
+    if (mtts) {
+        snprintf(mtts_buf, sizeof(mtts_buf), "%u", (unsigned)mtts);
+        names[n] = TELNETTY_MNES_MTTS; values[n++] = mtts_buf;
+    }
+    if (screen_reader >= 0) {
+        snprintf(sr_buf, sizeof(sr_buf), "%d", screen_reader ? 1 : 0);
+        names[n] = TELNETTY_MNES_SCREEN_READER; values[n++] = sr_buf;
+    }
+    if (n == 0) return 0;
+    return telnetty_send_environ(ctx, names, values, n);
 }
 
 /* ============================================================================
@@ -1398,9 +1462,83 @@ static TELNETTY_UNUSED int telnetty_get_linemode(telnetty_context_t* ctx) {
 
 static TELNETTY_UNUSED int telnetty_send_eor(telnetty_context_t* ctx) {
     if (!ctx) return -1;
-    
+
     /* Send EOR command */
     return telnetty_send_command(ctx, TELNETTY_EOR);
+}
+
+/* ============================================================================
+ * StartTLS (TELOPT 46, draft-altman-telnet-starttls)
+ *
+ * Signaling only. The actual TLS upgrade is caller's job:
+ *   1. peer sends IAC WILL 46 (or we send IAC WILL 46)
+ *   2. both sides settle to enabled
+ *   3. one side sends IAC SB STARTTLS FOLLOWS IAC SE
+ *   4. that side fires TELNETTY_EVENT_CUSTOM + TELNETTY_STARTTLS_EVENT_ID
+ *   5. the app hands the socket to its TLS layer and calls
+ *      telnetty_starttls_reset(ctx) to drop any queued cleartext
+ *
+ * We never touch bytes ourselves — this is purely a negotiation gateway.
+ * ============================================================================ */
+
+/* Reserve a stable custom-event id for STARTTLS. Callers who register
+ * extended handlers for TELNETTY_EVENT_CUSTOM should check this id. */
+#define TELNETTY_STARTTLS_EVENT_ID  0x54544c53u  /* 'TTLS' */
+
+/* draft-altman-telnet-starttls SB subcommands */
+#define TELNETTY_STARTTLS_FOLLOWS  1
+
+
+static void telnetty__starttls_sb(
+    telnetty_context_t* ctx, uint8_t option,
+    const uint8_t* data, size_t length, void* user_data
+) {
+    (void)option; (void)user_data;
+    if (!ctx || !data || length < 1) return;
+    if (data[0] != TELNETTY_STARTTLS_FOLLOWS) return;
+    /* Signal-only fire. We use telnetty_fire_event directly to avoid
+     * dragging events.h into options.h — the union carries no payload
+     * (length 0) since the "next bytes are TLS" is the whole message. */
+    telnetty_event_data_union_t u;
+    memset(&u, 0, sizeof(u));
+    u.data.data = NULL;
+    u.data.length = 0;
+    telnetty_fire_event(ctx,
+        (telnetty_event_type_t)TELNETTY_STARTTLS_EVENT_ID, &u);
+}
+
+static void telnetty__starttls_handler(
+    telnetty_context_t* ctx, uint8_t option, uint8_t command, void* user_data
+) {
+    (void)ctx; (void)option; (void)command; (void)user_data;
+    /* Nothing to do here — SB drives the FOLLOWS signal. */
+}
+
+/**
+ * Enable StartTLS negotiation. After the peer accepts (DO 46), call
+ * telnetty_starttls_send_follows() when your side is ready to switch,
+ * OR watch for TELNETTY_EVENT_CUSTOM + TELNETTY_STARTTLS_EVENT_ID when
+ * the peer signals its readiness.
+ */
+static TELNETTY_UNUSED int telnetty_enable_starttls(telnetty_context_t* ctx) {
+    if (!ctx) return -1;
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_STARTTLS, 1, 1);
+    telnetty_register_option(ctx, TELNETTY_TELOPT_STARTTLS,
+                             telnetty__starttls_handler, NULL);
+    telnetty_register_sb_handler(ctx, TELNETTY_TELOPT_STARTTLS,
+                                 telnetty__starttls_sb, NULL);
+    return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_STARTTLS);
+}
+
+/**
+ * Announce "next bytes are TLS handshake" via IAC SB STARTTLS FOLLOWS
+ * IAC SE. Caller must upgrade the socket to TLS immediately after this
+ * call. The peer will fire its own TELNETTY_STARTTLS_EVENT_ID.
+ */
+static TELNETTY_UNUSED int telnetty_starttls_send_follows(telnetty_context_t* ctx) {
+    if (!ctx) return -1;
+    uint8_t sb = TELNETTY_STARTTLS_FOLLOWS;
+    return telnetty_send_subnegotiation(ctx, TELNETTY_TELOPT_STARTTLS, &sb, 1);
 }
 
 /* ============================================================================

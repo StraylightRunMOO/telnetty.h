@@ -1142,6 +1142,223 @@ static void test_linemode_send_mode(void) {
     telnetty_destroy(ctx);
 }
 
+/* ----- MTTS canonical flag values ----- */
+
+static void test_mtts_flag_values(void) {
+    /* MTTS spec: bit 0..10 must have these exact weights. Wire numeric
+     * form ("MTTS N") is what MUDs match on. */
+    OK(TELNETTY_MTTS_FLAG_ANSI          == 1,    "mtts-flag: ANSI = 1");
+    OK(TELNETTY_MTTS_FLAG_VT100         == 2,    "mtts-flag: VT100 = 2");
+    OK(TELNETTY_MTTS_FLAG_UTF8          == 4,    "mtts-flag: UTF8 = 4");
+    OK(TELNETTY_MTTS_FLAG_256COLORS     == 8,    "mtts-flag: 256 = 8");
+    OK(TELNETTY_MTTS_FLAG_MOUSETRACKING == 16,   "mtts-flag: MOUSE = 16");
+    OK(TELNETTY_MTTS_FLAG_COLORPALETTE  == 32,   "mtts-flag: PALETTE = 32");
+    OK(TELNETTY_MTTS_FLAG_SCREENREADER  == 64,   "mtts-flag: SR = 64");
+    OK(TELNETTY_MTTS_FLAG_PROXY         == 128,  "mtts-flag: PROXY = 128");
+    OK(TELNETTY_MTTS_FLAG_TRUECOLOR     == 256,  "mtts-flag: TRUECOLOR = 256");
+    OK(TELNETTY_MTTS_FLAG_MNES          == 512,  "mtts-flag: MNES = 512");
+    OK(TELNETTY_MTTS_FLAG_MSLP          == 1024, "mtts-flag: MSLP = 1024");
+}
+
+/* ----- MCCP1 negotiation stub ----- */
+
+static void test_mccp1_negotiate(void) {
+    reset_rfc();
+    telnetty_context_t* ctx = telnetty_create(rfc_cb, NULL);
+    OK(telnetty_enable_mccp1(ctx) == 0, "mccp1: enable");
+
+    /* Peer accepts with DO 85. */
+    const uint8_t peer_do[] = { TELNETTY_IAC, TELNETTY_DO, TELNETTY_TELOPT_MCCP1 };
+    telnetty_process(ctx, peer_do, sizeof(peer_do));
+    OK(rfc_do_seen[TELNETTY_TELOPT_MCCP1] == 1, "mccp1: EVENT_DO fired");
+
+    telnetty_destroy(ctx);
+}
+
+/* ----- MSP inline trigger parser ----- */
+
+static int msp_calls = 0;
+static telnetty_msp_trigger_t msp_last;
+static char msp_file_copy[128];
+static char msp_type_copy[64];
+
+static void msp_cb(telnetty_context_t* ctx, const telnetty_msp_trigger_t* t, void* ud) {
+    (void)ctx; (void)ud;
+    msp_calls++;
+    msp_last = *t;
+    /* File/type strings are transient — snapshot them. */
+    snprintf(msp_file_copy, sizeof(msp_file_copy), "%s", t->file ? t->file : "");
+    snprintf(msp_type_copy, sizeof(msp_type_copy), "%s", t->type ? t->type : "");
+    msp_last.file = msp_file_copy;
+    msp_last.type = msp_type_copy[0] ? msp_type_copy : NULL;
+}
+
+static void test_msp_trigger(void) {
+    msp_calls = 0;
+    telnetty_context_t* ctx = telnetty_create(NULL, NULL);
+    OK(telnetty_enable_msp(ctx, msp_cb, NULL) == 0, "msp: enable");
+
+    /* Feed inline text containing a SOUND trigger. */
+    const char* text = "hello !!SOUND(cast.wav V=75 L=1 P=50 T=magic) world";
+    telnetty_process(ctx, (const uint8_t*)text, strlen(text));
+
+    OK(msp_calls == 1, "msp: exactly one trigger fired");
+    OK(msp_last.kind == TELNETTY_MSP_KIND_SOUND, "msp: kind = SOUND");
+    OK(strcmp(msp_last.file, "cast.wav") == 0, "msp: file parsed");
+    OK(msp_last.volume == 75, "msp: V=75");
+    OK(msp_last.loops == 1, "msp: L=1");
+    OK(msp_last.priority == 50, "msp: P=50");
+    OK(msp_last.type && strcmp(msp_last.type, "magic") == 0, "msp: T=magic");
+
+    /* Music with no args. */
+    msp_calls = 0;
+    const char* text2 = "!!MUSIC(ambient.mid)";
+    telnetty_process(ctx, (const uint8_t*)text2, strlen(text2));
+    OK(msp_calls == 1, "msp: MUSIC trigger fired");
+    OK(msp_last.kind == TELNETTY_MSP_KIND_MUSIC, "msp: kind = MUSIC");
+    OK(strcmp(msp_last.file, "ambient.mid") == 0, "msp: MUSIC file");
+
+    /* Non-trigger text is ignored. */
+    msp_calls = 0;
+    const char* text3 = "plain text ! and !bang but no double";
+    telnetty_process(ctx, (const uint8_t*)text3, strlen(text3));
+    OK(msp_calls == 0, "msp: single bangs ignored");
+
+    telnetty_destroy(ctx);
+}
+
+/* ----- MNES send helper ----- */
+
+static void test_mnes_send(void) {
+    telnetty_context_t* ctx = telnetty_create(NULL, NULL);
+    OK(telnetty_enable_environ(ctx) == 0, "mnes: enable NEW-ENVIRON");
+
+    telnetty_buffer_reset(ctx->out_buffer);
+    OK(telnetty_send_mnes(ctx, "Telnetty", "1.1.0", "XTERM-256COLOR",
+                          "UTF-8", TELNETTY_MTTS_FLAG_ANSI |
+                                    TELNETTY_MTTS_FLAG_UTF8 |
+                                    TELNETTY_MTTS_FLAG_256COLORS,
+                          0) == 0, "mnes: send returns 0");
+    /* Emitted bytes should contain all six variable names. */
+    const uint8_t* w = ctx->out_buffer->data;
+    size_t wl = ctx->out_buffer->length;
+    OK(wl > 0, "mnes: bytes emitted");
+    /* Look for CLIENT_NAME token. NEW-ENVIRON escapes the name inside SB,
+     * so we just search for a raw substring. */
+    int found_client_name = 0;
+    for (size_t i = 0; i + 11 <= wl; i++) {
+        if (memcmp(w + i, "CLIENT_NAME", 11) == 0) { found_client_name = 1; break; }
+    }
+    OK(found_client_name, "mnes: CLIENT_NAME on wire");
+
+    telnetty_destroy(ctx);
+}
+
+/* ----- OSC 8 hyperlink + OSC palette query ----- */
+
+static void test_osc8_link(void) {
+    telnetty_context_t* ctx = telnetty_create(NULL, NULL);
+    telnetty_buffer_reset(ctx->out_buffer);
+    OK(telnetty_osc8_link(ctx, NULL, "https://example.com", "click me") == 0,
+       "osc8: emit link");
+    const uint8_t* w = ctx->out_buffer->data;
+    size_t wl = ctx->out_buffer->length;
+    /* Expected: ESC ] 8 ; ; https://example.com ESC \ click me ESC ] 8 ; ; ESC \ */
+    int has_head = 0, has_tail = 0, has_text = 0;
+    for (size_t i = 0; i + 5 <= wl; i++) {
+        if (w[i]==0x1B && w[i+1]==']' && w[i+2]=='8' && w[i+3]==';' && w[i+4]==';') {
+            has_head = 1; break;
+        }
+    }
+    OK(has_head, "osc8: head sequence present");
+    for (size_t i = 0; i + 7 <= wl; i++) {
+        if (memcmp(w + i, "\x1B]8;;\x1B\\", 7) == 0) { has_tail = 1; break; }
+    }
+    OK(has_tail, "osc8: closing sequence present");
+    for (size_t i = 0; i + 8 <= wl; i++) {
+        if (memcmp(w + i, "click me", 8) == 0) { has_text = 1; break; }
+    }
+    OK(has_text, "osc8: text present");
+
+    telnetty_destroy(ctx);
+}
+
+static void test_osc_query(void) {
+    telnetty_context_t* ctx = telnetty_create(NULL, NULL);
+    telnetty_buffer_reset(ctx->out_buffer);
+    OK(telnetty_osc_query_color(ctx, 4, 196) == 0, "osc-query: 4;196");
+    /* Bytes: ESC ] 4 ; 196 ; ? ESC \ */
+    const uint8_t* w = ctx->out_buffer->data;
+    size_t wl = ctx->out_buffer->length;
+    int found = 0;
+    for (size_t i = 0; i + 10 <= wl; i++) {
+        if (memcmp(w + i, "\x1B]4;196;?\x1B\\", 10) == 0) { found = 1; break; }
+    }
+    OK(found, "osc-query: 4;196;? on wire");
+
+    telnetty_buffer_reset(ctx->out_buffer);
+    OK(telnetty_osc_query_color(ctx, 11, 0) == 0, "osc-query: 11");
+    w = ctx->out_buffer->data; wl = ctx->out_buffer->length;
+    found = 0;
+    for (size_t i = 0; i + 8 <= wl; i++) {
+        if (memcmp(w + i, "\x1B]11;?\x1B\\", 8) == 0) { found = 1; break; }
+    }
+    OK(found, "osc-query: 11;? on wire");
+
+    /* Rejected codes. */
+    OK(telnetty_osc_query_color(ctx, 5, 0) == -1, "osc-query: invalid code");
+    OK(telnetty_osc_query_color(ctx, 4, 300) == -1, "osc-query: 256+ index");
+
+    telnetty_destroy(ctx);
+}
+
+/* ----- StartTLS (TELOPT 46) signaling ----- */
+
+static int starttls_signal_hits = 0;
+
+static void starttls_cb(telnetty_context_t* ctx, telnetty_event_type_t ev,
+                        const telnetty_event_data_union_t* d, void* ud) {
+    (void)ctx; (void)d; (void)ud;
+    if ((uint32_t)ev == TELNETTY_STARTTLS_EVENT_ID) starttls_signal_hits++;
+}
+
+static void test_starttls_signaling(void) {
+    starttls_signal_hits = 0;
+    telnetty_context_t* ctx = telnetty_create(starttls_cb, NULL);
+    OK(telnetty_enable_starttls(ctx) == 0, "starttls: enable");
+
+    /* Peer accepts with DO 46. */
+    const uint8_t peer_do[] = { TELNETTY_IAC, TELNETTY_DO, TELNETTY_TELOPT_STARTTLS };
+    telnetty_process(ctx, peer_do, sizeof(peer_do));
+
+    /* Peer signals FOLLOWS via SB. */
+    const uint8_t peer_sb[] = {
+        TELNETTY_IAC, TELNETTY_SB, TELNETTY_TELOPT_STARTTLS,
+        TELNETTY_STARTTLS_FOLLOWS,
+        TELNETTY_IAC, TELNETTY_SE
+    };
+    telnetty_process(ctx, peer_sb, sizeof(peer_sb));
+    OK(starttls_signal_hits == 1, "starttls: FOLLOWS event fired");
+
+    /* Our side sending FOLLOWS puts bytes on the wire. */
+    telnetty_buffer_reset(ctx->out_buffer);
+    OK(telnetty_starttls_send_follows(ctx) == 0, "starttls: send FOLLOWS");
+    const uint8_t* w = ctx->out_buffer->data;
+    size_t wl = ctx->out_buffer->length;
+    int found = 0;
+    for (size_t i = 0; i + 6 <= wl; i++) {
+        if (w[i]==TELNETTY_IAC && w[i+1]==TELNETTY_SB &&
+            w[i+2]==TELNETTY_TELOPT_STARTTLS &&
+            w[i+3]==TELNETTY_STARTTLS_FOLLOWS &&
+            w[i+4]==TELNETTY_IAC && w[i+5]==TELNETTY_SE) {
+            found = 1; break;
+        }
+    }
+    OK(found, "starttls: SB FOLLOWS on wire");
+
+    telnetty_destroy(ctx);
+}
+
 int main(void) {
     printf("--- Telnetty Extended-Surface Tests ---\n");
     test_version_macros();
@@ -1175,6 +1392,13 @@ int main(void) {
     test_linemode_slc_triples();
     test_linemode_slc_partial_triple();
     test_linemode_send_mode();
+    test_mtts_flag_values();
+    test_mccp1_negotiate();
+    test_msp_trigger();
+    test_mnes_send();
+    test_osc8_link();
+    test_osc_query();
+    test_starttls_signaling();
 
     printf("\nPassed: %d\nFailed: %d\n", passed, failed);
     return failed == 0 ? 0 : 1;

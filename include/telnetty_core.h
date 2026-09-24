@@ -224,6 +224,7 @@ typedef void (*telnetty_log_callback_t)(
 #define TELNETTY_TELOPT_TN3270E         40   /* TN3270E */
 #define TELNETTY_TELOPT_CHARSET         42   /* Charset (RFC 2066) */
 #define TELNETTY_TELOPT_EOL             45   /* End of line */
+#define TELNETTY_TELOPT_STARTTLS        46   /* StartTLS (draft-altman) */
 
 /* RFC 1143 Q-method negotiation states (libtelnet-compatible). */
 #define TELNETTY_Q_NO         0   /* Option disabled */

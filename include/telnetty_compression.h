@@ -60,6 +60,12 @@ extern "C" {
  * MCCP2 Protocol (MUD Client Compression Protocol v2)
  * ============================================================================ */
 
+/* MCCP1 (RFC-ish, MUD-tradition) option code — TELOPT 85. Legacy; the
+ * on-the-wire "flip to compressed" sentinel is IAC SB 85 WILL SE IAC SE,
+ * a weird sequence chosen so a naive TELNET stack wouldn't choke. We
+ * accept it but forward the inflate to the same zlib pipe MCCP2 uses. */
+#define TELNETTY_TELOPT_MCCP1 85
+
 /* MCCP2 option code */
 #define TELNETTY_TELOPT_MCCP2 86
 
@@ -500,9 +506,36 @@ static TELNETTY_UNUSED int telnetty_enable_mccp2(telnetty_context_t* ctx, int le
 
 static TELNETTY_UNUSED int telnetty_disable_mccp2(telnetty_context_t* ctx) {
     if (!ctx) return -1;
-    
+
     /* Send WONT to disable MCCP2 */
     return telnetty_send_option(ctx, TELNETTY_WONT, TELNETTY_TELOPT_MCCP2);
+}
+
+/* MCCP1 handler: legacy protocol still seen on some servers. MCCP1 uses
+ * the same zlib inflate pipe as MCCP2 but signals the switch-to-compressed
+ * transition with a bizarre `IAC SB 85 WILL SE IAC SE` sentinel. We
+ * negotiate the option code so a peer that offers it gets a definitive
+ * WILL/WONT reply instead of silence; consumers that need to actually
+ * inflate a legacy MCCP1 stream should install their own SB handler for
+ * TELNETTY_TELOPT_MCCP1 to drive the inflate. The MCCP2 path is
+ * preferred by every server built in the last two decades. */
+static void telnetty_mccp1_handler(
+    telnetty_context_t* ctx,
+    uint8_t option,
+    uint8_t command,
+    void* user_data
+) {
+    (void)ctx; (void)option; (void)command; (void)user_data;
+    /* Empty: we do the negotiation, the SB handler (if any) does the
+     * inflate. This mirrors libtelnet's minimal MCCP1 stance. */
+}
+
+static TELNETTY_UNUSED int telnetty_enable_mccp1(telnetty_context_t* ctx) {
+    if (!ctx) return -1;
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_MCCP1, 1, 1);
+    telnetty_register_option(ctx, TELNETTY_TELOPT_MCCP1,
+                             telnetty_mccp1_handler, NULL);
+    return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_MCCP1);
 }
 
 static TELNETTY_UNUSED bool telnetty_is_mccp2_enabled(telnetty_context_t* ctx) {

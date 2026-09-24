@@ -565,6 +565,45 @@ static int telnetty_color_set_state(
 static TELNETTY_UNUSED int telnetty_color_flush(telnetty_context_t* ctx);
 
 /* ============================================================================
+ * OSC helpers — modern terminal Operating System Command sequences.
+ * OSC 8 hyperlinks and OSC 4/10/11 palette queries are outside the SGR
+ * pipeline, so they get their own small emit helpers that bypass the
+ * color state and push directly into ctx->out_buffer.
+ * ============================================================================ */
+
+/**
+ * Emit an OSC 8 explicit hyperlink into the output buffer.
+ *
+ *   \e]8;;<url>\e\\<text>\e]8;;\e\\
+ *
+ * `params` is the optional `id=<...>` (or other) parameter string, or
+ * NULL for none. `text` is what the terminal displays; `url` is the
+ * target. Terminals that don't understand OSC 8 silently show `text`.
+ * Returns 0 on success, -1 on failure (ctx or url NULL, buffer alloc).
+ */
+static TELNETTY_UNUSED int telnetty_osc8_link(
+    telnetty_context_t* ctx,
+    const char* params,
+    const char* url,
+    const char* text
+);
+
+/**
+ * Emit an OSC 4 / OSC 10 / OSC 11 palette query. The peer terminal
+ * replies with the requested color spec (RGB or symbolic) via an OSC
+ * response on stdin that arrives as an ordinary DATA event — install
+ * a parser for `\e]<n>;rgb:...\e\\` in your DATA handler to consume it.
+ *
+ * `code` is 4, 10, or 11. For code=4, `index` is the 256-color slot to
+ * query (0-255); for 10/11 the index is ignored. Returns 0 on success.
+ */
+static TELNETTY_UNUSED int telnetty_osc_query_color(
+    telnetty_context_t* ctx,
+    int code,
+    int index
+);
+
+/* ============================================================================
  * Implementation
  * ============================================================================ */
 
@@ -1355,6 +1394,57 @@ static TELNETTY_UNUSED int telnetty_color_flush(telnetty_context_t* ctx) {
     s->buffer_pos = 0;
     if (s->buffer && s->buffer_size > 0) s->buffer[0] = '\0';
     return 0;
+}
+
+static TELNETTY_UNUSED int telnetty_osc8_link(
+    telnetty_context_t* ctx,
+    const char* params,
+    const char* url,
+    const char* text
+) {
+    if (!ctx || !ctx->out_buffer || !url) return -1;
+    /* Layout: \e]8;<params>;<url>\e\\<text>\e]8;;\e\\
+     *              5 + p + 1 + u + 2   + t + 5    + 2 = 15 + p + u + t */
+    const char* p_str = params ? params : "";
+    const char* t_str = text   ? text   : "";
+    /* Emit head. */
+    const uint8_t head1[] = { 0x1B, ']', '8', ';' };
+    if (telnetty_buffer_append(ctx->out_buffer, head1, sizeof(head1)) < 0) return -1;
+    if (*p_str && telnetty_buffer_append(ctx->out_buffer,
+        (const uint8_t*)p_str, strlen(p_str)) < 0) return -1;
+    if (telnetty_buffer_append(ctx->out_buffer, (const uint8_t*)";", 1) < 0) return -1;
+    if (telnetty_buffer_append(ctx->out_buffer,
+        (const uint8_t*)url, strlen(url)) < 0) return -1;
+    const uint8_t st[] = { 0x1B, '\\' };
+    if (telnetty_buffer_append(ctx->out_buffer, st, sizeof(st)) < 0) return -1;
+    /* Body text. */
+    if (*t_str && telnetty_buffer_append(ctx->out_buffer,
+        (const uint8_t*)t_str, strlen(t_str)) < 0) return -1;
+    /* Closing hyperlink. */
+    const uint8_t tail[] = { 0x1B, ']', '8', ';', ';', 0x1B, '\\' };
+    if (telnetty_buffer_append(ctx->out_buffer, tail, sizeof(tail)) < 0) return -1;
+    return 0;
+}
+
+static TELNETTY_UNUSED int telnetty_osc_query_color(
+    telnetty_context_t* ctx,
+    int code,
+    int index
+) {
+    if (!ctx || !ctx->out_buffer) return -1;
+    if (code != 4 && code != 10 && code != 11) return -1;
+    /* \e]<code>[;<index>];?\e\\
+     * The trailing ? is what makes it a query rather than a set. */
+    char buf[32];
+    int n;
+    if (code == 4) {
+        if (index < 0 || index > 255) return -1;
+        n = snprintf(buf, sizeof(buf), "\x1B]4;%d;?\x1B\\", index);
+    } else {
+        n = snprintf(buf, sizeof(buf), "\x1B]%d;?\x1B\\", code);
+    }
+    if (n < 0 || (size_t)n >= sizeof(buf)) return -1;
+    return telnetty_buffer_append(ctx->out_buffer, (const uint8_t*)buf, (size_t)n) < 0 ? -1 : 0;
 }
 
 #endif /* TELNETTY_COLOR_IMPLEMENTATION */
