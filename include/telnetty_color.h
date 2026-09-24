@@ -681,7 +681,8 @@ static int telnetty_color_append_code(
     if (!state || !code) return -1;
     
     size_t code_len = strlen(code);
-    if (state->buffer_pos + code_len >= state->buffer_size) {
+    if (state->buffer_pos >= state->buffer_size ||
+        code_len >= state->buffer_size - state->buffer_pos) {
         return -1; /* Buffer overflow */
     }
     
@@ -700,7 +701,8 @@ static int telnetty_color_append_number(
     char num_str[16];
     int len = snprintf(num_str, sizeof(num_str), "%d", number);
     
-    if (len < 0 || state->buffer_pos + len >= state->buffer_size) {
+    if (len < 0 || state->buffer_pos >= state->buffer_size ||
+        (size_t)len >= state->buffer_size - state->buffer_pos) {
         return -1;
     }
     

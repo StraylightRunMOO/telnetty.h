@@ -7,6 +7,7 @@
 #include <assert.h>
 
 #define TELNETTY_IMPLEMENTATION
+#define TELNETTY_EVENTS_IMPLEMENTATION
 #define TELNETTY_OPTIONS_IMPLEMENTATION
 #include "telnetty_core.h"
 #include "telnetty_options.h"

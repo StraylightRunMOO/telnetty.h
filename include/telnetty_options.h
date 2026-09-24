@@ -837,27 +837,48 @@ static int telnetty_send_environ(
 ) {
     if (!ctx || !vars || !values) return -1;
     
-    /* Calculate required buffer size */
+    /* Calculate escaped RFC 1572 payload size without overflowing. */
     size_t total_size = 0;
     for (size_t i = 0; i < count; i++) {
-        total_size += strlen(vars[i]) + 1; /* VAR + name */
-        total_size += strlen(values[i]) + 1; /* VALUE + value */
+        if (!vars[i] || !values[i]) return -1;
+        const unsigned char* fields[2] = {
+            (const unsigned char*)vars[i], (const unsigned char*)values[i]
+        };
+        for (size_t f = 0; f < 2; f++) {
+            size_t field_size = 1; /* VAR or VALUE marker */
+            for (const unsigned char* p = fields[f]; *p; p++) {
+                size_t add = (*p == TELNETTY_ENV_VAR || *p == TELNETTY_ENV_VALUE ||
+                              *p == TELNETTY_ENV_ESC || *p == TELNETTY_ENV_USERVAR) ? 2 : 1;
+                if (field_size > TELNETTY_MAX_SB_LENGTH - add) return -1;
+                field_size += add;
+            }
+            if (total_size > TELNETTY_MAX_SB_LENGTH - field_size) return -1;
+            total_size += field_size;
+        }
     }
     
     /* Allocate temporary buffer */
-    uint8_t* buffer = (uint8_t*)TELNETTY_OPTIONS_MALLOC(total_size);
+    uint8_t* buffer = (uint8_t*)TELNETTY_OPTIONS_MALLOC(total_size ? total_size : 1);
     if (!buffer) return -1;
     
-    /* Build environment data */
+    /* Build environment data, escaping reserved NEW-ENVIRON marker bytes. */
     size_t offset = 0;
     for (size_t i = 0; i < count; i++) {
         buffer[offset++] = TELNETTY_ENV_VAR;
-        strcpy((char*)buffer + offset, vars[i]);
-        offset += strlen(vars[i]);
+        for (const unsigned char* p = (const unsigned char*)vars[i]; *p; p++) {
+            if (*p == TELNETTY_ENV_VAR || *p == TELNETTY_ENV_VALUE ||
+                *p == TELNETTY_ENV_ESC || *p == TELNETTY_ENV_USERVAR)
+                buffer[offset++] = TELNETTY_ENV_ESC;
+            buffer[offset++] = *p;
+        }
         
         buffer[offset++] = TELNETTY_ENV_VALUE;
-        strcpy((char*)buffer + offset, values[i]);
-        offset += strlen(values[i]);
+        for (const unsigned char* p = (const unsigned char*)values[i]; *p; p++) {
+            if (*p == TELNETTY_ENV_VAR || *p == TELNETTY_ENV_VALUE ||
+                *p == TELNETTY_ENV_ESC || *p == TELNETTY_ENV_USERVAR)
+                buffer[offset++] = TELNETTY_ENV_ESC;
+            buffer[offset++] = *p;
+        }
     }
     
     /* Send subnegotiation */

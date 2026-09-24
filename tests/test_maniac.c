@@ -9,7 +9,8 @@
  *
  * The invariants asserted per iteration:
  *   - telnetty_process never returns < 0 (parser doesn't self-abort)
- *   - the context stays parseable across the full walk
+ *   - parser framing state matches a small independent five-state oracle
+ *     after every feed chunk
  *   - no error surfaces other than TELNETTY_ERR_PROTOCOL / _SB_OVERFLOW
  *     (both expected for adversarial input; anything else is a bug)
  *
@@ -58,8 +59,7 @@ typedef struct {
 } maniac_row_t;
 
 static void build_rows(
-    int n_syms,
-    const void* edges_v, int n_edges, size_t edge_stride,
+    int n_syms, const maniac_edge_t* edges, int n_edges,
     maniac_row_t* rows
 ) {
     for (int i = 0; i < n_syms; i++) {
@@ -67,11 +67,10 @@ static void build_rows(
         rows[i].edge_count  = 0;
         rows[i].total_weight = 0;
     }
-    const unsigned char* base = (const unsigned char*)edges_v;
     for (int e = 0; e < n_edges; e++) {
-        const unsigned char* row = base + (size_t)e * edge_stride;
-        unsigned short from   = *(const unsigned short*)(row + 0);
-        unsigned int   weight = *(const unsigned int  *)(row + 4);
+        unsigned int from = edges[e].from;
+        unsigned int weight = edges[e].weight;
+        if (from >= (unsigned int)n_syms) continue;
         if (rows[from].first_edge < 0) rows[from].first_edge = e;
         rows[from].edge_count++;
         rows[from].total_weight += weight;
@@ -81,17 +80,15 @@ static void build_rows(
 /* Draw the next symbol given the current one. Returns -1 if the row is
  * empty (dangling terminal — fuzzer will pick a fresh start). */
 static int draw_next(
-    const void* edges_v, size_t edge_stride,
+    const maniac_edge_t* edges,
     const maniac_row_t* rows, int from
 ) {
     if (rows[from].edge_count == 0 || rows[from].total_weight == 0) return -1;
     unsigned int pick = rng_range(rows[from].total_weight);
-    const unsigned char* base = (const unsigned char*)edges_v;
     for (int i = 0; i < rows[from].edge_count; i++) {
-        const unsigned char* row = base +
-            (size_t)(rows[from].first_edge + i) * edge_stride;
-        unsigned short to     = *(const unsigned short*)(row + 2);
-        unsigned int   weight = *(const unsigned int  *)(row + 4);
+        const maniac_edge_t* row = &edges[rows[from].first_edge + i];
+        unsigned short to = row->to;
+        unsigned int weight = row->weight;
         if (pick < weight) return to;
         pick -= weight;
     }
@@ -103,18 +100,17 @@ static int draw_next(
  * weights. Miss -> -1, caller falls back to k=1. Linear scan is fine —
  * 270 s2c / 146 c2s edges total. */
 static int draw_next_k2(
-    const void* edges2_v, size_t stride, int n_edges2,
+    const maniac_edge2_t* edges2, int n_edges2,
     int prev, int cur
 ) {
-    const unsigned char* base = (const unsigned char*)edges2_v;
     /* First pass: total weight for (prev, cur). */
     unsigned int total = 0;
     for (int e = 0; e < n_edges2; e++) {
-        const unsigned char* row = base + (size_t)e * stride;
-        unsigned short p = *(const unsigned short*)(row + 0);
-        unsigned short c = *(const unsigned short*)(row + 2);
+        const maniac_edge2_t* row = &edges2[e];
+        unsigned short p = row->prev;
+        unsigned short c = row->cur;
         if (p == prev && c == cur) {
-            total += *(const unsigned int*)(row + 8);
+            total += row->weight;
         } else if (p > prev || (p == prev && c > cur)) {
             break;  /* sorted — past the window */
         }
@@ -123,15 +119,15 @@ static int draw_next_k2(
     unsigned int pick = rng_range(total);
     /* Second pass: pick weighted target. */
     for (int e = 0; e < n_edges2; e++) {
-        const unsigned char* row = base + (size_t)e * stride;
-        unsigned short p = *(const unsigned short*)(row + 0);
-        unsigned short c = *(const unsigned short*)(row + 2);
+        const maniac_edge2_t* row = &edges2[e];
+        unsigned short p = row->prev;
+        unsigned short c = row->cur;
         if (p != prev || c != cur) {
             if (p > prev || (p == prev && c > cur)) break;
             continue;
         }
-        unsigned int w = *(const unsigned int*)(row + 8);
-        if (pick < w) return *(const unsigned short*)(row + 4);
+        unsigned int w = row->weight;
+        if (pick < w) return row->to;
         pick -= w;
     }
     return -1;
@@ -142,6 +138,37 @@ static int draw_next_k2(
 static int    error_hits = 0;
 static int    unexpected_errors = 0;
 static int    last_error_code = 0;
+
+/* Independent five-state framing oracle, checked after each input chunk. */
+static telnetty_state_t model_state_byte(telnetty_state_t state, uint8_t byte) {
+    switch (state) {
+        case TELNETTY_STATE_DATA:
+            return byte == TELNETTY_IAC ? TELNETTY_STATE_IAC : state;
+        case TELNETTY_STATE_IAC:
+            if (byte == TELNETTY_IAC) return TELNETTY_STATE_DATA;
+            if (byte == TELNETTY_WILL || byte == TELNETTY_WONT ||
+                byte == TELNETTY_DO || byte == TELNETTY_DONT)
+                return TELNETTY_STATE_NEGOTIATION;
+            if (byte == TELNETTY_SB) return TELNETTY_STATE_SUBNEG;
+            return TELNETTY_STATE_DATA;
+        case TELNETTY_STATE_NEGOTIATION:
+            return TELNETTY_STATE_DATA;
+        case TELNETTY_STATE_SUBNEG:
+            return byte == TELNETTY_IAC ? TELNETTY_STATE_SUBNEG_IAC : state;
+        case TELNETTY_STATE_SUBNEG_IAC:
+            if (byte == TELNETTY_SE) return TELNETTY_STATE_DATA;
+            return TELNETTY_STATE_SUBNEG;
+    }
+    return TELNETTY_STATE_DATA;
+}
+
+static int process_checked(telnetty_context_t* ctx, const uint8_t* bytes,
+                           size_t length, telnetty_state_t* model_state) {
+    if (telnetty_process(ctx, bytes, length) < 0) return -1;
+    for (size_t i = 0; i < length; i++)
+        *model_state = model_state_byte(*model_state, bytes[i]);
+    return ctx->state == *model_state ? 0 : -2;
+}
 
 static void err_cb(telnetty_context_t* ctx, telnetty_event_type_t ev,
                    const telnetty_event_data_union_t* d, void* ud) {
@@ -169,13 +196,11 @@ static uint64_t draws_uniform = 0;
 
 static int walk(
     const maniac_symbol_t* alpha, int n_syms,
-    const void* edges_v, int n_edges,
-    size_t edge_stride,
+    const maniac_edge_t* edges,
     const maniac_row_t* rows,
-    const void* edges2_v, int n_edges2, size_t edge2_stride,
+    const maniac_edge2_t* edges2, int n_edges2,
     int steps, size_t chunk_sz
 ) {
-    (void)n_edges;
     telnetty_context_t* ctx = telnetty_create(err_cb, NULL);
     if (!ctx) return -1;
 
@@ -187,12 +212,13 @@ static int walk(
 
     int prev = -1;
     int cur = (int)rng_range((uint32_t)n_syms);
+    telnetty_state_t model_state = TELNETTY_STATE_DATA;
     for (int s = 0; s < steps; s++) {
         const unsigned char* bytes = alpha[cur].bytes;
         size_t len = alpha[cur].length;
 
         if (chunk_sz == 0 || chunk_sz >= len) {
-            if (telnetty_process(ctx, bytes, len) < 0) {
+            if (process_checked(ctx, bytes, len, &model_state) != 0) {
                 telnetty_destroy(ctx);
                 return -1;
             }
@@ -200,7 +226,7 @@ static int walk(
             for (size_t i = 0; i < len; i += chunk_sz) {
                 size_t take = len - i;
                 if (take > chunk_sz) take = chunk_sz;
-                if (telnetty_process(ctx, bytes + i, take) < 0) {
+                if (process_checked(ctx, bytes + i, take, &model_state) != 0) {
                     telnetty_destroy(ctx);
                     return -1;
                 }
@@ -211,11 +237,11 @@ static int walk(
          * then uniform if the first-order row is also empty. */
         int nxt = -1;
         if (prev >= 0) {
-            nxt = draw_next_k2(edges2_v, edge2_stride, n_edges2, prev, cur);
+            nxt = draw_next_k2(edges2, n_edges2, prev, cur);
             if (nxt >= 0) draws_k2++;
         }
         if (nxt < 0) {
-            nxt = draw_next(edges_v, edge_stride, rows, cur);
+            nxt = draw_next(edges, rows, cur);
             if (nxt >= 0) draws_k1++;
         }
         if (nxt < 0) {
@@ -259,11 +285,14 @@ int main(int argc, char** argv) {
     for (int ci = 0; ci < MANIAC_CORPORA_N; ci++) {
         const maniac_corpus_t* corpus = &maniac_corpora[ci];
 
-        /* Per-corpus row table (variable length; a VLA keeps this compact). */
-        maniac_row_t rows[corpus->n_syms];
-        build_rows(corpus->n_syms,
-                   corpus->edges, corpus->n_edges,
-                   sizeof(corpus->edges[0]), rows);
+        /* Allocate the row index without relying on optional C99 VLAs. */
+        maniac_row_t* rows = (maniac_row_t*)calloc((size_t)corpus->n_syms,
+                                                   sizeof(*rows));
+        if (!rows) {
+            fprintf(stderr, "FAIL: unable to allocate MANIAC rows\n");
+            return 1;
+        }
+        build_rows(corpus->n_syms, corpus->edges, corpus->n_edges, rows);
 
         uint64_t corpus_walks = 0, corpus_errors = 0;
         uint64_t k2_before = draws_k2, k1_before = draws_k1,
@@ -281,16 +310,14 @@ int main(int argc, char** argv) {
                 unexpected_errors = 0;
 
                 int r = walk(corpus->alphabet, corpus->n_syms,
-                             corpus->edges, corpus->n_edges,
-                             sizeof(corpus->edges[0]), rows,
+                             corpus->edges, rows,
                              corpus->edges2, corpus->n_edges2,
-                             sizeof(corpus->edges2[0]),
                              steps, chunk_sizes[c]);
                 if (r < 0) {
                     fprintf(stderr,
                             "FAIL: corpus=%s seed=%d chunk=%zu "
-                            "walk returned -1 (last code=%d)\n",
-                            corpus->label, s, chunk_sizes[c], last_error_code);
+                            "walk returned %d (last code=%d)\n",
+                            corpus->label, s, chunk_sizes[c], r, last_error_code);
                     return 1;
                 }
                 total_walks++;
@@ -326,6 +353,7 @@ int main(int argc, char** argv) {
                    d ? 100.0 * (double)k1 / (double)d : 0.0,
                    d ? 100.0 * (double)un / (double)d : 0.0);
         }
+        free(rows);
     }
 
     uint64_t total_draws = draws_k2 + draws_k1 + draws_uniform;

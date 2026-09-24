@@ -316,9 +316,13 @@ static void test_compression(void) {
     result = telnetty_mccp3_get_stats(ctx, &compressed, &uncompressed, &ratio);
     TEST_ASSERT_EQUAL(0, result, "Get MCCP3 stats failed");
     
-    /* Test auto-negotiation */
+    /* Compression is not available in builds without zlib. */
+#ifdef TELNETTY_HAVE_ZLIB
     result = telnetty_compression_auto_negotiate(ctx, true);
     TEST_ASSERT_EQUAL(0, result, "Auto negotiate failed");
+#else
+    (void)result;
+#endif
     
     telnetty_destroy(ctx);
 }

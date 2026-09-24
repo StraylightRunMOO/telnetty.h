@@ -4,9 +4,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef TELNETTY_HAVE_ZLIB
 #include <zlib.h>
+#endif
 
 #define TELNETTY_IMPLEMENTATION
+#define TELNETTY_EVENTS_IMPLEMENTATION
 #define TELNETTY_OPTIONS_IMPLEMENTATION
 #define TELNETTY_MUD_IMPLEMENTATION
 #define TELNETTY_COMPRESSION_IMPLEMENTATION
@@ -147,6 +150,7 @@ static void test_gmcp(void) {
     telnetty_destroy(ctx);
 }
 
+#ifdef TELNETTY_HAVE_ZLIB
 static void test_mccp3_flag(void) {
     printf("test_mccp3_flag\n");
     telnetty_context_t* ctx = telnetty_create(on_ev, NULL);
@@ -158,6 +162,7 @@ static void test_mccp3_flag(void) {
     CHECK(telnetty_is_mccp3_enabled(ctx), "mccp3 on after DO");
     telnetty_destroy(ctx);
 }
+#endif
 
 static void test_mssp(void) {
     printf("test_mssp\n");
@@ -203,6 +208,7 @@ static void test_mcp_data_hook(void) {
     telnetty_destroy(ctx);
 }
 
+#ifdef TELNETTY_HAVE_ZLIB
 static void test_mccp2(void) {
     printf("test_mccp2\n");
     telnetty_context_t* ctx = telnetty_create(on_ev, NULL);
@@ -242,17 +248,22 @@ static void test_mccp2(void) {
     CHECK(got == strlen(msg) && memcmp(out, msg, got) == 0, "round-trip plaintext");
     telnetty_destroy(ctx);
 }
+#endif
 
 int main(void) {
     test_coalesce();
     test_status();
     test_msdp();
     test_gmcp();
+#ifdef TELNETTY_HAVE_ZLIB
     test_mccp3_flag();
+#endif
     test_mssp();
     test_mcp_line();
     test_mcp_data_hook();
+#ifdef TELNETTY_HAVE_ZLIB
     test_mccp2();
+#endif
     printf("%s (%d failed)\n", fails ? "FAILED" : "OK", fails);
     return fails ? 1 : 0;
 }

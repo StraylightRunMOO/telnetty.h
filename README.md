@@ -1,448 +1,262 @@
-# telnetty
+# telnetty.h
 
-A high-performance, modular, headers-only implementation of the TELNET protocol with comprehensive support for MUD-specific extensions, compression, and modern terminal features.
+A C99 header-only TELNET library for people who don't want to pretend the last interesting RFC came out in 1983 because they don't want to step on rakes trying to reinvent parsers and state machines. It handles the framing, the RFC 1143 Q-method, and the usual MUD extensions. Sockets, event loops, and rationalizations for why a frog drops a codpiece when someone rubs him out remain the responsibility of the consumer. If you wanted a full TCP stack or a reason to feel good about still using TELNET, this is not it.
 
-## Features
+Modules are optional in the ordinary C sense: include the headers you call and define the corresponding `*_IMPLEMENTATION` macro before those includes. The headers compile clean under `-std=c99 -Wall -Wextra -Wpedantic -Werror` (also C11/C17, and from C++11 onward) with no POSIX feature macros required. Every function is `static`, so each translation unit that actually calls telnetty gets its own private copy and they link without fighting. We have all been burned by the alternative.
 
-### Core TELNET Protocol
-- **RFC 854/855 Compliant**: Full compliance with TELNET protocol standards
-- **Event-Driven Architecture**: Clean separation of concerns with callback-based event handling
-- **State Machine Implementation**: Robust protocol state management
-- **Zero-Copy Operations**: Optimized for high-throughput scenarios
-- **Thread-Safe Options**: Optional thread safety for multi-threaded applications
+## Quickstart
 
-### TELNET Options
-- **Binary Transmission** (RFC 856): 8-bit clean data transmission
-- **Echo** (RFC 857): Local and remote echo control
-- **Suppress Go Ahead** (RFC 858): Half-duplex communication
-- **Status** (RFC 859): Option status reporting
-- **Timing Mark** (RFC 860): Synchronization support
-- **Terminal Type** (RFC 1091): Terminal capability detection
-- **Window Size** (RFC 1073): NAWS (Negotiate About Window Size)
-- **Terminal Speed** (RFC 1079): Speed negotiation
-- **Remote Flow Control** (RFC 1372): Flow control management
-- **Linemode** (RFC 1184): Line-at-a-time mode
-- **Environment Variables** (RFC 1572): NEW-ENVIRON support
-- **Charset** (RFC 2066): Character set negotiation
-- **End of Record** (RFC 885): Prompt marking
-
-### MUD-Specific Protocols
-- **MSDP** (MUD Server Data Protocol): Structured data exchange
-- **GMCP** (Generic MUD Communication Protocol): JSON-based messaging
-- **MTTS** (MUD Terminal Type Standard): Client capability detection
-- **MSSP** (MUD Server Status Protocol): Server information broadcasting
-- **MCCP2/MCCP3** (MUD Client Compression Protocol): zlib compression
-- **MCP 2.1** (MUD Client Protocol): Structured communication protocol
-
-### Advanced Features
-- **Color Support**: ANSI, 256-color, and true color (24-bit RGB)
-- **Buffer Management**: Efficient buffer pooling and zero-copy chains
-- **Event System**: Extensible event handling with priorities
-- **Compression**: Automatic compression negotiation and management
-- **Performance Monitoring**: Built-in statistics and metrics
-- **Memory Management**: Custom allocators and memory tracking
-
-## Architecture
-
-### Header Structure
-
-The library is organized as modular headers that can be included independently:
-
-```
-telnetty_core.h      - Core TELNET protocol implementation
-telnetty_events.h    - Event system and queue management
-telnetty_buffer.h    - High-performance buffer management
-telnetty_options.h   - Standard TELNET option implementations
-telnetty_mud.h       - MUD-specific protocol implementations
-telnetty_compression.h - Compression protocol support
-telnetty_mcp.h       - MCP 2.1 protocol implementation
-telnetty_color.h     - Terminal color support
-```
-
-### Design Principles
-
-1. **Modularity**: Each protocol is implemented as a separate, optional header
-2. **Performance**: Optimized for high-throughput scenarios with zero-copy operations
-3. **Extensibility**: Easy to add new protocols and features
-4. **Compatibility**: Works with existing TELNET clients and servers
-5. **Thread Safety**: Optional thread-safe operations for multi-threaded applications
-
-## Quick Start
-
-### Building the Library
-
-```bash
-# Clone the repository
-git clone https://github.com/StraylightRunMOO/telnetty.git
-cd telnetty
-
-# Create build directory
-mkdir build && cd build
-
-# Configure with CMake
-cmake .. -DBUILD_EXAMPLES=ON
-
-# Build
-make -j$(nproc)
-
-# Install (optional)
-sudo make install
-```
-
-### Dependencies
-
-- **Required**: C99 compatible compiler
-- **Optional**: zlib (for compression support)
-- **Optional**: libuv (for high-performance server example)
-- **Optional**: CMake 3.10+ (for building)
-
-### Basic Server Example
+The shortest path that does something useful. One context, echo, NAWS, and a willingness to compress if the peer asks nicely. It will not impress anyone with how clever it is. It will also not segfault on the first IAC.
 
 ```c
+#define TELNETTY_IMPLEMENTATION
+#define TELNETTY_OPTIONS_IMPLEMENTATION
+#define TELNETTY_COMPRESSION_IMPLEMENTATION
+
 #include "telnetty_core.h"
 #include "telnetty_options.h"
-#include "telnetty_color.h"
+#include "telnetty_compression.h"
 
-void handle_event(telnetty_context_t* ctx, telnetty_event_type_t event, 
-                  const telnetty_event_data_union_t* data, void* user_data) {
-    switch (event) {
-        case TELNETTY_EVENT_DATA:
-            /* Echo back with color */
-            telnetty_color_send(ctx, "Echo: ", TELNETTY_COLOR_CYAN, TELNETTY_COLOR_BLACK, 0);
-            telnetty_send(ctx, data->data.data, data->data.length);
-            break;
-            
-        case TELNETTY_EVENT_CONNECT:
-            /* Send welcome message */
-            telnetty_color_send(ctx, "Welcome!\r\n", 
-                            TELNETTY_COLOR_GREEN, TELNETTY_COLOR_BLACK, 0);
-            break;
+static void on_event(telnetty_context_t *ctx,
+                     telnetty_event_type_t event,
+                     const telnetty_event_data_union_t *data,
+                     void *user_data) {
+    (void)user_data;
+    if (event == TELNETTY_EVENT_DATA) {
+        /* Borrowed. Copy it if you need it later. */
+        telnetty_send(ctx, data->data.data, data->data.length);
     }
 }
 
-int main() {
-    telnetty_context_t* ctx = telnetty_create(handle_event, NULL);
-    
-    /* Enable options */
+int main(void) {
+    telnetty_context_t *ctx = telnetty_create(on_event, NULL);
+    if (!ctx) return 1;
+
+    telnetty_tick(ctx, 0);                    /* start the clock */
+    telnetty_set_negotiation_timeout(ctx, 5000);
     telnetty_enable_echo(ctx);
-    telnetty_enable_color(ctx, true);
-    
-    /* Your server loop here */
-    
+    telnetty_enable_naws(ctx);
+    telnetty_compression_auto_negotiate(ctx, 1);
+
+    /* In your read loop: */
+    /* uint8_t buf[4096]; ssize_t n = read(fd, buf, sizeof buf); */
+    /* if (n > 0) telnetty_process(ctx, buf, (size_t)n); */
+
+    /* Then drain the output buffer to the socket. */
+    /* Do not call telnetty_flush until every queued byte has left. */
+
     telnetty_destroy(ctx);
     return 0;
 }
 ```
 
-## Example Programs
+That's the whole pattern. Everything else is just more options and/or different callbacks. We have not invented a new way to feed bytes to a state machine.
 
-### Simple Server (`example_server_simple`)
+## What it supports
 
-A single-threaded TELNET server demonstrating basic functionality:
+### Standard TELNET options
 
-```bash
-# Run the simple server on port 4000
-./example_server_simple 4000
+BINARY, ECHO, SUPPRESS-GO-AHEAD, STATUS, TIMING-MARK, TERMINAL-TYPE, NAWS, TERMINAL-SPEED, LINEMODE, REMOTE-FLOW-CONTROL, NEW-ENVIRON, CHARSET, and END-OF-RECORD. The Q-method state machine (RFC 1143) helps you avoid a lot of footguns while negotiating them.
 
-# Connect with a TELNET client
-telnet localhost 4000
+### MUD and terminal protocols
+
+| Protocol | What it does | Notes |
+| --- | --- | --- |
+| MSDP | Structured variable updates | Flat and nested callbacks |
+| GMCP | JSON package messages | You parse the JSON; we just deliver the text |
+| MTTS | Terminal capability reporting | Includes the three-cycle TTYPE exchange |
+| MSSP | Server status values | |
+| MXP | Inline tag tokenization | Reports tags; does not render or decide which ones are safe |
+| ZMP | NUL-delimited commands and arguments | Subnegotiation payloads |
+| MSP | Inline sound and music triggers | Reports them; does not play them |
+| ATCP | Package and message subnegotiation | Option 200 |
+| MCCP2 / MCCP3 | MUD compression, both directions | Server and client sides; requires zlib |
+| MCCP1 | Legacy option negotiation | Negotiation only; no built-in inflate path |
+| MCP 2.1 | In-band line messages | `#$#` framing; not a TELNET option |
+| MNES | Standard MUD environment variables | Sent through NEW-ENVIRON |
+
+ANSI, 256-color, true-color, and selected OSC helpers live in the color module. StartTLS only signals the protocol transition; TLS itself belongs to your TLS library and your socket code. There are no WebSocket frames here. TELNET is a proverbially angry and occasionally Technicolor Old Testament world.
+
+## Build and tests
+
+You need a C99 compiler. CMake 3.10 or newer builds the project. zlib enables compression; libuv is only needed for the libuv server example. The optional Suspenders example needs a C11 compiler and the two external headers described below. None of this is exotic. If it fails to build, the problem is probably local.
+
+```sh
+cmake -S . -B build -DBUILD_TESTS=ON -DBUILD_EXAMPLES=ON
+cmake --build build -j
+ctest --test-dir build --output-on-failure
 ```
 
-### Simple Client (`example_client_simple`)
+Besides the unit tests, the suite compiles every header on its own and together as strict C99 and as C++ with warnings as errors. When `python3` is available it also runs the example servers over real sockets against a scripted client that negotiates MCCP2 and MCCP3. There is also a deterministic Markov fuzz harness (MANIAC) built from real wire traces, because hoping the parser survives adversarial input is not a strategy. We have tried that strategy. It does not work.
 
-A TELNET client with interactive terminal support:
+| CMake option | Default | Effect |
+| --- | --- | --- |
+| `BUILD_TESTS` | OFF | Build and register the test programs |
+| `BUILD_EXAMPLES` | ON | Build examples that have their dependencies |
+| `ENABLE_ZLIB` | ON | Look for zlib and enable compression when found |
+| `ENABLE_DEBUG` | OFF | Define `TELNETTY_DEBUG_MEMORY` |
+| `BUILD_DOCS` | OFF | Add a Doxygen target |
+| `BUILD_SUSPENDERS_EXAMPLE` | OFF | Build the coroutine example (also set both dependency include paths) |
 
-```bash
-# Connect to a TELNET server
-./example_client_simple localhost 4000
+To build without zlib, configure with `-DENABLE_ZLIB=OFF`. The library still builds; the MCCP enable/accept calls return `-1`. You will notice.
 
-# Connect to a MUD
-./example_client_simple mud.example.com 23
+### Use it from CMake
+
+The `telnetty::telnetty` target carries the include path and, when zlib was found, the `TELNETTY_HAVE_ZLIB` definition and the zlib link.
+
+```cmake
+# Installed copy
+find_package(telnetty 1.2 REQUIRED)
+
+# Vendored checkout
+add_subdirectory(third_party/telnetty.h)
+
+# Fetched at configure time
+include(FetchContent)
+FetchContent_Declare(telnetty
+    GIT_REPOSITORY https://github.com/StraylightRunMOO/telnetty.h.git
+    GIT_TAG v1.2.0)
+FetchContent_MakeAvailable(telnetty)
+
+target_link_libraries(my_mud PRIVATE telnetty::telnetty)
 ```
 
-### High-Performance Server (`example_server_libuv`)
+Examples are only built when telnetty is the top-level project. Without CMake, add `include/` to your include path and, for compression, define `TELNETTY_HAVE_ZLIB` and link `-lz`. The old ways still work.
 
-A multi-threaded server using libuv for maximum performance:
+### Examples
 
-```bash
-# Run with 4 threads on port 4000
-./example_server_libuv 4000 4
+The examples live in `examples/`. Each is one file you can read top to bottom. They are not production daemons. They are starting points that happen to compile.
 
-# Run with custom settings
-./example_server_libuv 4000 8  # 8 threads
+| Program | What it shows |
+| --- | --- |
+| `server_simple [port]` | `poll()` chat server: line input, NAWS/TTYPE, MCCP2/MCCP3, color, partial writes, timeouts |
+| `client_simple [host] [port]` | Line-mode client: answers TTYPE/NAWS, accepts MCCP2/MCCP3 |
+| `server_libuv [port]` | Echo server on a libuv loop; built only when libuv is installed |
+| `server_suspenders` | Optional C11 coroutine server |
+
+`server_suspenders` is an optional C11 echo server using [Suspenders](https://github.com/StraylightRunMOO/suspenders.h) and [Memento](https://github.com/StraylightRunMOO/memento). Suspenders currently expects Memento 3.x. It is useful when you want to see a telnetty context inside a coroutine-based TCP loop and have already accepted the additional dependencies.
+
+```sh
+cmake -S . -B build-suspenders \
+  -DBUILD_SUSPENDERS_EXAMPLE=ON \
+  -DMEMENTO_INCLUDE_DIR=/path/to/memento/include \
+  -DSUSPENDERS_INCLUDE_DIR=/path/to/suspenders/include
+cmake --build build-suspenders --target server_suspenders
+./build-suspenders/server_suspenders
 ```
 
-## Usage Guide
+It listens on port 4001. The example deliberately starts one worker because each telnetty context belongs to one thread. That is a useful constraint to see in a small example, before it turns up in a production incident. You probably don't even need threads for a game nobody is ever going to play, but we share the optimism.
 
-### Including the Library
+## Using it in a C program
 
-Include only the headers you need:
+Choose the modules you need. Macros before includes. Leave out anything you do not call. Everything needs the core. `TELNETTY_MUD_IMPLEMENTATION` turns on events for MSP and MXP, but only if the macros come before every include. Include the events header without its macro and `telnetty_enable_msp` / `telnetty_enable_mxp` return `-1`. This is not a design we are proud of. It is a design that works.
 
 ```c
-#include "telnetty_core.h"      /* Core functionality (required) */
-#include "telnetty_options.h"   /* Standard TELNET options */
-#include "telnetty_mud.h"       /* MUD protocols */
-#include "telnetty_color.h"     /* Color support */
+#define TELNETTY_IMPLEMENTATION
+#define TELNETTY_EVENTS_IMPLEMENTATION
+#define TELNETTY_BUFFER_IMPLEMENTATION
+#define TELNETTY_OPTIONS_IMPLEMENTATION
+#define TELNETTY_MUD_IMPLEMENTATION
+#define TELNETTY_COMPRESSION_IMPLEMENTATION
+#define TELNETTY_COLOR_IMPLEMENTATION
+#define TELNETTY_MCP_IMPLEMENTATION
+
+#include "telnetty_core.h"
+#include "telnetty_events.h"
+#include "telnetty_buffer.h"
+#include "telnetty_options.h"
+#include "telnetty_mud.h"
+#include "telnetty_compression.h"
+#include "telnetty_color.h"
+#include "telnetty_mcp.h"
 ```
 
-### Creating a Context
+A file that includes the headers without the macros sees only the types and constants. That is handy for passing `telnetty_context_t*` around without dragging the whole implementation into every translation unit.
+
+Create one context per connection. Feed received bytes to `telnetty_process()`. Write the queued output to the socket. Call `telnetty_tick()` from your event loop with a monotonic clock if you care about timeouts or rate limits. We do not provide a clock which means even our knuckle-dragging Diku friends can play.
 
 ```c
-telnetty_context_t* ctx = telnetty_create(event_handler, user_data);
-if (!ctx) {
-    /* Handle error */
+static void on_telnet_event(telnetty_context_t *ctx,
+                            telnetty_event_type_t event,
+                            const telnetty_event_data_union_t *data,
+                            void *user_data) {
+    (void)user_data;
+
+    switch (event) {
+    case TELNETTY_EVENT_DATA:
+        /* Borrowed pointer. Use it now or copy it. */
+        telnetty_send(ctx, data->data.data, data->data.length);
+        break;
+    case TELNETTY_EVENT_ERROR:
+        /* data->error.code is one of the TELNETTY_ERR_* values */
+        break;
+    default:
+        break;
+    }
 }
-```
 
-### Processing Data
+telnetty_context_t *ctx = telnetty_create(on_telnet_event, NULL);
+if (!ctx) { /* allocation failed */ }
 
-```c
-int processed = telnetty_process(ctx, data, length);
-if (processed < 0) {
-    /* Handle error */
-}
-```
+telnetty_tick(ctx, monotonic_ms());
+telnetty_set_negotiation_timeout(ctx, 5000);
+telnetty_set_rate_limit(ctx, 64 * 1024, 100);   /* bytes/s, IAC frames/s */
 
-### Sending Data
-
-```c
-/* Send raw data */
-telnetty_send(ctx, data, length);
-
-/* Send TELNET command */
-telnetty_send_command(ctx, TELNETTY_IAC);
-
-/* Send option negotiation */
-telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_ECHO);
-```
-
-### Enabling Features
-
-```c
-/* Enable standard options */
 telnetty_enable_echo(ctx);
 telnetty_enable_naws(ctx);
 telnetty_enable_ttype(ctx);
+telnetty_compression_auto_negotiate(ctx, 1);
+telnetty_color_init(ctx, 1);
 
-/* Enable MUD protocols */
-telnetty_enable_msdp(ctx, msdp_handler, user_data);
-telnetty_enable_gmcp(ctx, gmcp_handler, user_data);
+/* each read: */
+int n = telnetty_process(ctx, bytes, byte_count);
+if (n < 0) { /* fatal; check last error and close */ }
 
-/* Enable compression */
-telnetty_enable_mccp2(ctx, 6);  /* Level 6 compression */
-telnetty_enable_mccp3(ctx, 6);
+/* then write the queued output. */
+/* telnetty_get_output_buffer(ctx) gives the buffer. */
+/* Call telnetty_flush(ctx) only after every queued byte has been written. */
 
-/* Enable color support */
-telnetty_color_init(ctx, true);
+telnetty_destroy(ctx);
 ```
 
-## Protocol Support
+`telnetty_send()` doubles any embedded IAC bytes as required. Option and protocol helpers usually start negotiation when enabled. Check their return value; `-1` means setup or send failure. A successful return does not mean negotiation is finished. Wait for the peer or drive `telnetty_tick()` against a timeout. The protocol is older than most of the people writing code against it. It does not care about your schedule.
 
-### TELNET Options
+## Operational rules
 
-| Option | Code | Description |
-|--------|------|-------------|
-| BINARY | 0 | 8-bit data transmission |
-| ECHO | 1 | Local/remote echo |
-| SGA | 3 | Suppress Go Ahead |
-| STATUS | 5 | Option status |
-| TIMING-MARK | 6 | Synchronization |
-| TTYPE | 24 | Terminal type |
-| NAWS | 31 | Window size |
-| NEW_ENVIRON | 39 | Environment variables |
-| CHARSET | 42 | Character sets |
-| EOR | 25 | End of record |
+**One context, one thread.** Contexts are not thread-safe. Keep each `telnetty_context_t` on one thread and use a separate context for each connection. Do not call `telnetty_process()` and `telnetty_tick()` concurrently on the same context. The old pool and queue “thread-safe” flags remain for source compatibility and do not add locking. We left them in because removing them would have broken someone.
 
-### MUD Protocols
+**Drive the clock.** `telnetty_set_negotiation_timeout()` and `telnetty_set_rate_limit()` only work if your event loop calls `telnetty_tick(ctx, now_ms)` with a monotonic clock. If nothing drives the clock, neither timeout nor rate limit will magically expire. Computers are stubborn that way.
 
-| Protocol | Code | Description |
-|----------|------|-------------|
-| MSDP | 69 | Structured data exchange |
-| GMCP | 201 | JSON messaging |
-| MSSP | 70 | Server status |
-| MCCP2 | 86 | Compression v2 |
-| MCCP3 | 87 | Compression v3 |
-| MCP | 200 | MUD Client Protocol |
+**Treat peer content as input.** Framing is parsed and bounded, but protocol payloads still come from the network. Validate values in your callbacks. MXP reports markup; it does not decide which tags are safe to execute or render. GMCP gives your application JSON text, not a JSON parser. We have seen what happens when people assume otherwise.
 
-## Performance Features
+**Compression.** Once negotiated it is transparent:
 
-### Memory Management
-- **Buffer Pooling**: Pre-allocated buffers reduce malloc/free overhead
-- **Zero-Copy Operations**: Direct buffer manipulation where possible
-- **Custom Allocators**: User-provided memory allocation functions
-- **Memory Tracing**: Optional memory usage tracking
+- **Server:** `telnetty_compression_auto_negotiate()` (or the individual enable calls) offers both. MCCP2 output is compressed inside `telnetty_send()` and every other helper. MCCP3 input is inflated inside `telnetty_process()`, including bytes that arrive in the same read as the client's start marker.
+- **Client:** `telnetty_accept_mccp2()` and `telnetty_accept_mccp3()` accept the server's offers. Inflating and compressing happen in the same places.
+- **Closing:** call `telnetty_compression_cleanup()` before your last flush. It ends outbound streams with `Z_FINISH` so the peer sees a clean end of stream.
+- **Errors:** a corrupt inbound stream fires `EVENT_ERROR` with `TELNETTY_ERR_COMPRESSION`, and `telnetty_process()` returns `-1`. Garbage is never delivered as text.
 
-### Optimization Features
-- **Fast Path Optimization**: Optimized paths for common operations
-- **Vectorized Operations**: SIMD instructions where supported
-- **State Machine Optimization**: Table-driven state transitions
-- **Branch Prediction**: Optimized code layout
+Write output only through telnetty (`telnetty_send` and friends). A byte appended to the output buffer directly, after MCCP2 starts, corrupts the client's stream. Define `TELNETTY_DEBUG_OUT_HOOK` in a debug build to abort at the next write if that happens. It is a blunt instrument. It works.
 
-### Threading Support
-- **Thread-Safe Options**: Optional per-context locks
-- **Atomic Operations**: Lock-free algorithms where possible
-- **Multi-Threaded Examples**: High-performance server implementation
+MCCP1 negotiates the legacy option but does not inflate its stream. We implemented the negotiation because someone asked. We did not implement the inflate because nobody has asked yet.
 
-## Configuration Options
+**TLS has a boundary.** The StartTLS helpers only signal `FOLLOWS`. Your application must switch to a TLS implementation and manage the socket transition. Telnetty does not provide TLS.
 
-### Compilation Flags
+## Where to look next
 
-```cmake
-# Enable zlib compression support
--DENABLE_ZLIB=ON
+- `include/telnetty_core.h` — parser, context, negotiation, send and receive
+- `include/telnetty_options.h` — standard TELNET options
+- `include/telnetty_mud.h` — MUD protocols and their callback APIs
+- `include/telnetty_compression.h` — zlib-backed compression helpers
+- `include/telnetty_events.h` — extended events and priorities
+- `include/telnetty_buffer.h` — buffers, chains, pools, and queues
+- `include/telnetty_color.h` — terminal colors and OSC helpers
+- `include/telnetty_mcp.h` — MCP 2.1 in-band messages
+- `CHANGELOG.md` — release history and API changes
 
-# Enable debug output
--DENABLE_DEBUG=ON
-
-# Build examples
--DBUILD_EXAMPLES=ON
-
-# Build tests
--DBUILD_TESTS=ON
-```
-
-### Runtime Configuration
-
-```c
-/* Set buffer sizes */
-#define TELNETTY_MAX_BUFFER_SIZE (64 * 1024)
-#define TELNETTY_INITIAL_BUFFER_SIZE 4096
-
-/* Set compression level */
-#define TELNETTY_COMPRESSION_LEVEL 6
-
-/* Set timeouts */
-#define TELNETTY_OPTION_TIMEOUT 5000
-```
-
-## API Reference
-
-### Core Functions
-
-| Function | Description |
-|----------|-------------|
-| `telnetty_create()` | Create a new TELNET context |
-| `telnetty_destroy()` | Destroy a TELNET context |
-| `telnetty_process()` | Process incoming TELNET data |
-| `telnetty_send()` | Send data through the connection |
-| `telnetty_send_command()` | Send a TELNET command |
-| `telnetty_send_option()` | Send option negotiation |
-| `telnetty_register_option()` | Register an option handler |
-
-### Event Functions
-
-| Function | Description |
-|----------|-------------|
-| `telnetty_fire_event()` | Fire an event |
-| `telnetty_fire_event_ex()` | Fire an event with priority |
-| `telnetty_fire_custom_event()` | Fire a custom event |
-| `telnetty_process_events()` | Process queued events |
-
-### Color Functions
-
-| Function | Description |
-|----------|-------------|
-| `telnetty_color_init()` | Initialize color support |
-| `telnetty_color_set_foreground()` | Set foreground color |
-| `telnetty_color_set_background()` | Set background color |
-| `telnetty_color_send()` | Send colored text |
-| `telnetty_color_reset()` | Reset all colors |
-
-## Testing
-
-### Unit Tests
-
-```bash
-# Build with tests enabled
-cmake .. -DBUILD_TESTS=ON
-make
-
-# Run tests
-make test
-ctest --verbose
-```
-
-### Integration Tests
-
-The example programs serve as integration tests:
-
-```bash
-# Test server and client together
-./example_server_simple 4000 &
-sleep 1
-./example_client_simple localhost 4000
-```
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Compilation Errors**
-   - Ensure C99 compiler is available
-   - Check for missing dependencies (zlib, libuv)
-   - Verify CMake version (3.10+ required)
-
-2. **Connection Problems**
-   - Check firewall settings
-   - Verify server is listening on correct port
-   - Check for port conflicts
-
-3. **Protocol Issues**
-   - Enable debug output with `-DENABLE_DEBUG=ON`
-   - Check TELNET option negotiation
-   - Verify client compatibility
-
-### Debug Output
-
-Enable debug output for troubleshooting:
-
-```cmake
-cmake .. -DENABLE_DEBUG=ON
-```
-
-This enables:
-- Memory allocation tracking
-- Protocol debugging
-- Event logging
-- Error reporting
-
-## Contributing
-
-### Code Style
-
-- Follow C99 standard
-- Use consistent indentation (4 spaces)
-- Document all public functions
-- Include error checking
-- Use meaningful variable names
-
-### Testing
-
-- Include unit tests for new features
-- Update integration tests
-- Test with multiple TELNET clients
-- Verify protocol compliance
+The public declarations and comments in each header are the most complete API reference. The examples show how the pieces fit together without requiring a tour through every RFC first. We read RFCs so you do not have to. You are welcome.
 
 ## License
 
-This library is released under the [MIT License](LICENSE). See the LICENSE file for details.
+Telnetty is distributed under the [MIT License](LICENSE). Keep the license notice with redistributed copies; the code is more useful when nobody has to guess what they are allowed to do with it. If you improve it, send the patch. If you do not, that is also fine.
 
-## Acknowledgments
-
-- **MTH Library** (https://github.com/scandum/mth) - MUD Telnet Handler
-- **libtelnet** (https://github.com/seanmiddleditch/libtelnet) - TELNET protocol library
-- **MCP 2.1 Specification** (https://www.moo.mud.org/mcp/mcp2.html)
-- **zlib** (https://zlib.net/) - Compression library
-- **libuv** (https://libuv.org/) - Cross-platform asynchronous I/O
-
-## Support
-
-For questions, bug reports, or feature requests:
-
-- **GitHub Issues**: https://github.com/yourusername/unified-telnet/issues
-- **Documentation**: See the `docs/` directory
-- **Examples**: Check the `examples/` directory for usage patterns
-
----
-
-**Note**: This is a headers-only implementation. Simply include the headers you need and define the appropriate implementation macro before including them.

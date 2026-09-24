@@ -1666,6 +1666,7 @@ static size_t telnetty_mcp_get_packages(
     size_t max_packages
 ) {
     if (!ctx || !packages) return 0;
+    (void)max_packages;
     
     /* This would need integration with MCP data structure */
     /* For now, return 0 */
@@ -1755,13 +1756,22 @@ static int telnetty_mcp_build_message(
     
     /* Calculate required size */
     size_t required_size = 1; /* # */
-    if (message->package) required_size += strlen(message->package);
+    size_t package_len = message->package ? strlen(message->package) : 0;
+    size_t message_len = message->message ? strlen(message->message) : 0;
+    size_t data_len = message->data ? strlen(message->data) : 0;
+    if (package_len > SIZE_MAX - required_size) return -1;
+    required_size += package_len;
+    if (required_size == SIZE_MAX) return -1;
     required_size += 1; /* space */
-    if (message->message) required_size += strlen(message->message);
+    if (message_len > SIZE_MAX - required_size) return -1;
+    required_size += message_len;
     if (message->data) {
+        if (required_size == SIZE_MAX) return -1;
+        if (data_len > SIZE_MAX - required_size - 1) return -1;
         required_size += 1; /* space */
-        required_size += strlen(message->data);
+        required_size += data_len;
     }
+    if (required_size > SIZE_MAX - 2 || required_size + 2 > (size_t)INT_MAX) return -1;
     required_size += 2; /* \r\n */
     
     if (buffer_size < required_size) return -1;
@@ -1771,21 +1781,21 @@ static int telnetty_mcp_build_message(
     buffer[offset++] = '#';
     
     if (message->package) {
-        strcpy((char*)buffer + offset, message->package);
-        offset += strlen(message->package);
+        memcpy(buffer + offset, message->package, package_len);
+        offset += package_len;
     }
     
     buffer[offset++] = ' ';
     
     if (message->message) {
-        strcpy((char*)buffer + offset, message->message);
-        offset += strlen(message->message);
+        memcpy(buffer + offset, message->message, message_len);
+        offset += message_len;
     }
     
     if (message->data) {
         buffer[offset++] = ' ';
-        strcpy((char*)buffer + offset, message->data);
-        offset += strlen(message->data);
+        memcpy(buffer + offset, message->data, data_len);
+        offset += data_len;
     }
     
     buffer[offset++] = '\r';
@@ -1831,6 +1841,7 @@ static void telnetty_mcp_core_handler(
     const char* data,
     void* user_data
 ) {
+    (void)data; (void)user_data;
     if (!ctx || !package || !message) return;
     
     /* Handle core MCP messages */
@@ -1849,6 +1860,7 @@ static void telnetty_mcp_simpleedit_handler(
     const char* data,
     void* user_data
 ) {
+    (void)data; (void)user_data;
     if (!ctx || !package || !message) return;
     
     /* Handle SimpleEdit messages */
@@ -1862,6 +1874,7 @@ static void telnetty_mcp_redirect_handler(
     const char* data,
     void* user_data
 ) {
+    (void)data; (void)user_data;
     if (!ctx || !package || !message) return;
     
     /* Handle Redirect messages */
@@ -1875,6 +1888,7 @@ static void telnetty_mcp_dns_handler(
     const char* data,
     void* user_data
 ) {
+    (void)data; (void)user_data;
     if (!ctx || !package || !message) return;
     
     /* Handle DNS messages */
