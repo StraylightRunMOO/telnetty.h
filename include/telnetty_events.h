@@ -12,7 +12,7 @@
  * - Thread-safe event handling (optional)
  * 
  * @author Damus <damus@straylightrun.org>
- * @version 1.0.0
+ * @version 1.2.0
  * 
  */
 
@@ -159,6 +159,7 @@ typedef struct telnetty_event_handler {
  * Event System API
  * ============================================================================ */
 
+#ifdef TELNETTY_EVENTS_IMPLEMENTATION
 /**
  * Create an event queue
  * 
@@ -166,7 +167,7 @@ typedef struct telnetty_event_handler {
  * @param flags Queue configuration flags
  * @return New event queue or NULL on failure
  */
-static telnetty_event_queue_t* telnetty_event_queue_create(
+static TELNETTY_UNUSED telnetty_event_queue_t* telnetty_event_queue_create(
     size_t max_size,
     int flags
 );
@@ -187,7 +188,7 @@ static TELNETTY_UNUSED void telnetty_event_queue_destroy(telnetty_event_queue_t*
  * @param data Event data (optional)
  * @return 0 on success, -1 on failure
  */
-static int telnetty_event_queue_push(
+static TELNETTY_UNUSED int telnetty_event_queue_push(
     telnetty_event_queue_t* queue,
     telnetty_event_type_t type,
     telnetty_event_priority_t priority,
@@ -201,7 +202,7 @@ static int telnetty_event_queue_push(
  * @param event Output event structure
  * @return 1 if event retrieved, 0 if queue empty, -1 on error
  */
-static int telnetty_event_queue_pop(
+static TELNETTY_UNUSED int telnetty_event_queue_pop(
     telnetty_event_queue_t* queue,
     telnetty_event_entry_t* event
 );
@@ -213,7 +214,7 @@ static int telnetty_event_queue_pop(
  * @param event Output event structure
  * @return 1 if event available, 0 if queue empty, -1 on error
  */
-static int telnetty_event_queue_peek(
+static TELNETTY_UNUSED int telnetty_event_queue_peek(
     telnetty_event_queue_t* queue,
     telnetty_event_entry_t* event
 );
@@ -243,7 +244,7 @@ static TELNETTY_UNUSED size_t telnetty_event_queue_count(telnetty_event_queue_t*
  * @param priority Handler priority
  * @return 0 on success, -1 on failure
  */
-static int telnetty_register_event_handler(
+static TELNETTY_UNUSED int telnetty_register_event_handler(
     telnetty_context_t* ctx,
     telnetty_event_type_t event_type,
     telnetty_extended_event_callback_t cb,
@@ -259,7 +260,7 @@ static int telnetty_register_event_handler(
  * @param cb Handler callback to remove
  * @return 0 on success, -1 on failure
  */
-static int telnetty_unregister_event_handler(
+static TELNETTY_UNUSED int telnetty_unregister_event_handler(
     telnetty_context_t* ctx,
     telnetty_event_type_t event_type,
     telnetty_extended_event_callback_t cb
@@ -273,7 +274,7 @@ static int telnetty_unregister_event_handler(
  * @param priority Event priority
  * @param data Event data
  */
-static void telnetty_fire_event_ex(
+static TELNETTY_UNUSED void telnetty_fire_event_ex(
     telnetty_context_t* ctx,
     telnetty_event_type_t type,
     telnetty_event_priority_t priority,
@@ -281,10 +282,14 @@ static void telnetty_fire_event_ex(
 );
 
 /**
- * Process all queued events
+ * Compatibility no-op. Events are always dispatched synchronously from
+ * telnetty_fire_event / telnetty_process: DATA and SB payloads borrow the
+ * caller's buffers, so they cannot safely be queued for later. The
+ * standalone telnetty_event_queue_* API is available for application
+ * events that own their data.
  * 
  * @param ctx TELNET context
- * @return Number of events processed or -1 on error
+ * @return 0, or -1 if ctx is NULL
  */
 static TELNETTY_UNUSED int telnetty_process_events(telnetty_context_t* ctx);
 
@@ -296,7 +301,7 @@ static TELNETTY_UNUSED int telnetty_process_events(telnetty_context_t* ctx);
  * @param data Custom event data
  * @param priority Event priority
  */
-static void telnetty_fire_custom_event(
+static TELNETTY_UNUSED void telnetty_fire_custom_event(
     telnetty_context_t* ctx,
     int event_id,
     void* data,
@@ -304,13 +309,16 @@ static void telnetty_fire_custom_event(
 );
 
 /**
- * Create a connection event
+ * Create a connection event. The address is carried in `data.data`
+ * (pointer and length) for compatibility with existing handlers; the port
+ * is not represented, so put it in the address string ("host:port") if a
+ * handler needs it.
  * 
- * @param address Remote address
- * @param port Remote port
+ * @param address Remote address (borrowed; must outlive the event)
+ * @param port Ignored
  * @return Event data union with connection info
  */
-static telnetty_event_data_union_t telnetty_event_create_connect(
+static TELNETTY_UNUSED telnetty_event_data_union_t telnetty_event_create_connect(
     const char* address,
     int port
 );
@@ -322,7 +330,7 @@ static telnetty_event_data_union_t telnetty_event_create_connect(
  * @param message Optional message
  * @return Event data union with disconnect info
  */
-static telnetty_event_data_union_t telnetty_event_create_disconnect(
+static TELNETTY_UNUSED telnetty_event_data_union_t telnetty_event_create_disconnect(
     int reason,
     const char* message
 );
@@ -335,11 +343,12 @@ static telnetty_event_data_union_t telnetty_event_create_disconnect(
  * @param watermark Water mark threshold
  * @return Event data union with buffer info
  */
-static telnetty_event_data_union_t telnetty_event_create_buffer(
+static TELNETTY_UNUSED telnetty_event_data_union_t telnetty_event_create_buffer(
     size_t current_size,
     size_t max_size,
     size_t watermark
 );
+#endif /* TELNETTY_EVENTS_IMPLEMENTATION */
 
 /* ============================================================================
  * Inline Helper Functions
@@ -414,7 +423,7 @@ static TELNETTY_UNUSED void telnetty_event_queue_destroy(telnetty_event_queue_t*
     TELNETTY_EVENTS_FREE(queue);
 }
 
-static int telnetty_event_queue_push(
+static TELNETTY_UNUSED int telnetty_event_queue_push(
     telnetty_event_queue_t* queue,
     telnetty_event_type_t type,
     telnetty_event_priority_t priority,
@@ -479,7 +488,7 @@ static int telnetty_event_queue_push(
     return 0;
 }
 
-static int telnetty_event_queue_pop(
+static TELNETTY_UNUSED int telnetty_event_queue_pop(
     telnetty_event_queue_t* queue,
     telnetty_event_entry_t* event
 ) {
@@ -501,7 +510,7 @@ static int telnetty_event_queue_pop(
     return 1;
 }
 
-static int telnetty_event_queue_peek(
+static TELNETTY_UNUSED int telnetty_event_queue_peek(
     telnetty_event_queue_t* queue,
     telnetty_event_entry_t* event
 ) {
@@ -539,7 +548,7 @@ static TELNETTY_UNUSED size_t telnetty_event_queue_count(telnetty_event_queue_t*
 /* Free the whole handler chain rooted at `p`. Installed onto
  * telnetty__event_handlers_free_hook so telnetty_destroy can release the
  * list without depending on this header. */
-static void telnetty__events_free_chain(void* p) {
+static TELNETTY_UNUSED void telnetty__events_free_chain(void* p) {
     telnetty_event_handler_t* h = (telnetty_event_handler_t*)p;
     while (h) {
         telnetty_event_handler_t* next = h->next;
@@ -553,7 +562,7 @@ static void telnetty__events_free_chain(void* p) {
  * TELNETTY_EVENT_CUSTOM_START). Installed onto
  * telnetty__extended_dispatch_hook so core telnetty_fire_event routes
  * through us. */
-static void telnetty__events_dispatch(
+static TELNETTY_UNUSED void telnetty__events_dispatch(
     telnetty_context_t* ctx,
     telnetty_event_type_t type,
     const telnetty_event_data_union_t* data
@@ -579,7 +588,7 @@ static inline void telnetty__events_ensure_hook(void) {
         telnetty__extended_dispatch_hook = telnetty__events_dispatch;
 }
 
-static int telnetty_register_event_handler(
+static TELNETTY_UNUSED int telnetty_register_event_handler(
     telnetty_context_t* ctx,
     telnetty_event_type_t event_type,
     telnetty_extended_event_callback_t cb,
@@ -610,7 +619,7 @@ static int telnetty_register_event_handler(
     return 0;
 }
 
-static int telnetty_unregister_event_handler(
+static TELNETTY_UNUSED int telnetty_unregister_event_handler(
     telnetty_context_t* ctx,
     telnetty_event_type_t event_type,
     telnetty_extended_event_callback_t cb
@@ -631,7 +640,7 @@ static int telnetty_unregister_event_handler(
     return removed > 0 ? 0 : -1;
 }
 
-static void telnetty_fire_event_ex(
+static TELNETTY_UNUSED void telnetty_fire_event_ex(
     telnetty_context_t* ctx,
     telnetty_event_type_t type,
     telnetty_event_priority_t priority,
@@ -669,7 +678,7 @@ static TELNETTY_UNUSED void telnetty_fire_custom_event_bin(
     telnetty_fire_event_ex(ctx, (telnetty_event_type_t)event_id, priority, &event_data);
 }
 
-static void telnetty_fire_custom_event(
+static TELNETTY_UNUSED void telnetty_fire_custom_event(
     telnetty_context_t* ctx,
     int event_id,
     void* data,
@@ -685,19 +694,19 @@ static void telnetty_fire_custom_event(
  * Event Creation Helpers
  * ============================================================================ */
 
-static telnetty_event_data_union_t telnetty_event_create_connect(
+static TELNETTY_UNUSED telnetty_event_data_union_t telnetty_event_create_connect(
     const char* address,
     int port
 ) {
     (void)port;
     telnetty_event_data_union_t data;
-    /* Note: In a real implementation, we'd properly store the connection data */
+    /* Address in data.data; see the declaration for why port is dropped. */
     data.data.data = (const uint8_t*)address;
     data.data.length = address ? strlen(address) : 0;
     return data;
 }
 
-static telnetty_event_data_union_t telnetty_event_create_disconnect(
+static TELNETTY_UNUSED telnetty_event_data_union_t telnetty_event_create_disconnect(
     int reason,
     const char* message
 ) {
@@ -707,7 +716,7 @@ static telnetty_event_data_union_t telnetty_event_create_disconnect(
     return data;
 }
 
-static telnetty_event_data_union_t telnetty_event_create_buffer(
+static TELNETTY_UNUSED telnetty_event_data_union_t telnetty_event_create_buffer(
     size_t current_size,
     size_t max_size,
     size_t watermark

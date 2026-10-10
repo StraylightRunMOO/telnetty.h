@@ -220,9 +220,9 @@ static void test_pool_exhaustion_fallback(void) {
 
 static void test_version_macros(void) {
     OK(TELNETTY_VERSION_MAJOR == 1, "major version");
-    OK(TELNETTY_VERSION_MINOR == 1, "minor version");
-    OK(strcmp(TELNETTY_VERSION_STRING, "1.1.0") == 0, "version string");
-    OK(TELNETTY_VERSION_HEX == ((1 << 16) | (1 << 8) | 0), "version hex");
+    OK(TELNETTY_VERSION_MINOR == 2, "minor version");
+    OK(strcmp(TELNETTY_VERSION_STRING, "1.2.0") == 0, "version string");
+    OK(TELNETTY_VERSION_HEX == ((1 << 16) | (2 << 8) | 0), "version hex");
 }
 
 /* ----- Default option policy sets support flags ----- */
@@ -617,6 +617,20 @@ static void test_negotiation_timeout(void) {
     OK(opt->us == TELNETTY_Q_NO, "timeout: us reset to Q_NO after timeout");
 
     telnetty_destroy(ctx);
+
+    /* Options offered before the first tick (the usual connection setup)
+     * must time out relative to the first real clock reading, not 0. */
+    timeout_error_hits = 0;
+    ctx = telnetty_create(timeout_cb, NULL);
+    telnetty_set_negotiation_timeout(ctx, 500);
+    telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_ECHO);
+    telnetty_tick(ctx, 1000000);
+    OK(timeout_error_hits == 0, "timeout: pre-tick offer not expired by first tick");
+    OK(ctx->options[TELNETTY_TELOPT_ECHO]->deadline_ms == 1000500,
+       "timeout: pre-tick offer gets deadline from first tick");
+    telnetty_tick(ctx, 1000600);
+    OK(timeout_error_hits == 1, "timeout: pre-tick offer expires after timeout");
+    telnetty_destroy(ctx);
 }
 
 /* ----- Rate limits: byte + IAC bucket ----- */
@@ -673,7 +687,7 @@ static void rec_capture(telnetty_context_t* ctx, int depth,
     c->event_types[c->count] = (int)type;
     c->depths[c->count] = depth;
     snprintf(c->paths[c->count],  sizeof(c->paths[0]),  "%s", path  ? path  : "");
-    snprintf(c->values[c->count], sizeof(c->values[0]), "%s", value ? value : "");
+    snprintf(c->values[c->count], sizeof(c->values[0]), "%.63s", value ? value : "");
     c->count++;
 }
 

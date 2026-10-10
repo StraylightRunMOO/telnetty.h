@@ -12,7 +12,7 @@
  * - MSSP (MUD Server Status Protocol)
  * 
  * @author Damus <damus@straylightrun.org>
- * @version 1.0.0
+ * @version 1.2.0
  * 
  */
 
@@ -125,6 +125,7 @@ typedef struct {
     bool negotiation_complete;          /**< Negotiation is complete */
 } telnetty_msdp_data_t;
 
+#ifdef TELNETTY_MUD_IMPLEMENTATION
 /**
  * MSDP option handler
  * 
@@ -133,7 +134,7 @@ typedef struct {
  * @param command Command received
  * @param user_data User data (should be telnetty_msdp_data_t*)
  */
-static void telnetty_msdp_handler(
+static TELNETTY_UNUSED void telnetty_msdp_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -148,7 +149,7 @@ static void telnetty_msdp_handler(
  * @param user_data User data for handler
  * @return 0 on success, -1 on failure
  */
-static int telnetty_enable_msdp(
+static TELNETTY_UNUSED int telnetty_enable_msdp(
     telnetty_context_t* ctx,
     telnetty_msdp_handler_t handler,
     void* user_data
@@ -181,7 +182,7 @@ static TELNETTY_UNUSED int telnetty_msdp_set_recursive_callback(
  * @param val Variable value
  * @return 0 on success, -1 on failure
  */
-static int telnetty_msdp_send(
+static TELNETTY_UNUSED int telnetty_msdp_send(
     telnetty_context_t* ctx,
     const char* var,
     const char* val
@@ -196,7 +197,7 @@ static int telnetty_msdp_send(
  * @param ... Format arguments
  * @return 0 on success, -1 on failure
  */
-static int telnetty_msdp_sendf(
+static TELNETTY_UNUSED int telnetty_msdp_sendf(
     telnetty_context_t* ctx,
     const char* var,
     const char* fmt,
@@ -210,7 +211,7 @@ static int telnetty_msdp_sendf(
  * @param var Variable name
  * @return 0 on success, -1 on failure
  */
-static int telnetty_msdp_request(
+static TELNETTY_UNUSED int telnetty_msdp_request(
     telnetty_context_t* ctx,
     const char* var
 );
@@ -223,7 +224,7 @@ static int telnetty_msdp_request(
  * @param flags Flags to set
  * @return 0 on success, -1 on failure
  */
-static int telnetty_msdp_set_flags(
+static TELNETTY_UNUSED int telnetty_msdp_set_flags(
     telnetty_context_t* ctx,
     const char* var,
     uint32_t flags
@@ -237,7 +238,7 @@ static int telnetty_msdp_set_flags(
  * @param flags Flags to clear
  * @return 0 on success, -1 on failure
  */
-static int telnetty_msdp_clear_flags(
+static TELNETTY_UNUSED int telnetty_msdp_clear_flags(
     telnetty_context_t* ctx,
     const char* var,
     uint32_t flags
@@ -252,7 +253,7 @@ static int telnetty_msdp_clear_flags(
  * @param var Variable name
  * @return Variable value or NULL if not found
  */
-static const char* telnetty_msdp_get(
+static TELNETTY_UNUSED const char* telnetty_msdp_get(
     telnetty_context_t* ctx,
     const char* var
 );
@@ -264,10 +265,11 @@ static const char* telnetty_msdp_get(
  * @param var Variable name
  * @return 0 on success, -1 on failure
  */
-static int telnetty_msdp_remove(
+static TELNETTY_UNUSED int telnetty_msdp_remove(
     telnetty_context_t* ctx,
     const char* var
 );
+#endif /* TELNETTY_MUD_IMPLEMENTATION */
 
 /* ============================================================================
  * GMCP (Generic MUD Communication Protocol)
@@ -303,6 +305,7 @@ typedef struct {
     bool negotiation_complete;          /**< Negotiation is complete */
 } telnetty_gmcp_data_t;
 
+#ifdef TELNETTY_MUD_IMPLEMENTATION
 /**
  * GMCP option handler
  * 
@@ -311,7 +314,7 @@ typedef struct {
  * @param command Command received
  * @param user_data User data (should be telnetty_gmcp_data_t*)
  */
-static void telnetty_gmcp_handler(
+static TELNETTY_UNUSED void telnetty_gmcp_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -326,7 +329,7 @@ static void telnetty_gmcp_handler(
  * @param user_data User data for handler
  * @return 0 on success, -1 on failure
  */
-static int telnetty_enable_gmcp(
+static TELNETTY_UNUSED int telnetty_enable_gmcp(
     telnetty_context_t* ctx,
     telnetty_gmcp_handler_t handler,
     void* user_data
@@ -341,7 +344,7 @@ static int telnetty_enable_gmcp(
  * @param data GMCP data (JSON format, optional)
  * @return 0 on success, -1 on failure
  */
-static int telnetty_gmcp_send(
+static TELNETTY_UNUSED int telnetty_gmcp_send(
     telnetty_context_t* ctx,
     const char* module,
     const char* message,
@@ -358,7 +361,7 @@ static int telnetty_gmcp_send(
  * @param ... Format arguments
  * @return 0 on success, -1 on failure
  */
-static int telnetty_gmcp_sendf(
+static TELNETTY_UNUSED int telnetty_gmcp_sendf(
     telnetty_context_t* ctx,
     const char* module,
     const char* message,
@@ -373,7 +376,7 @@ static int telnetty_gmcp_sendf(
  * @param module Module name
  * @return 0 on success, -1 on failure
  */
-static int telnetty_gmcp_register_module(
+static TELNETTY_UNUSED int telnetty_gmcp_register_module(
     telnetty_context_t* ctx,
     const char* module
 );
@@ -385,7 +388,7 @@ static int telnetty_gmcp_register_module(
  * @param module Module name
  * @return 0 on success, -1 on failure
  */
-static int telnetty_gmcp_unregister_module(
+static TELNETTY_UNUSED int telnetty_gmcp_unregister_module(
     telnetty_context_t* ctx,
     const char* module
 );
@@ -398,7 +401,7 @@ static int telnetty_gmcp_unregister_module(
  * @param version Client version
  * @return 0 on success, -1 on failure
  */
-static int telnetty_gmcp_send_hello(
+static TELNETTY_UNUSED int telnetty_gmcp_send_hello(
     telnetty_context_t* ctx,
     const char* client,
     const char* version
@@ -412,11 +415,12 @@ static int telnetty_gmcp_send_hello(
  * @param count Number of modules
  * @return 0 on success, -1 on failure
  */
-static int telnetty_gmcp_send_supports(
+static TELNETTY_UNUSED int telnetty_gmcp_send_supports(
     telnetty_context_t* ctx,
     const char* const* modules,
     size_t count
 );
+#endif /* TELNETTY_MUD_IMPLEMENTATION */
 
 /* ============================================================================
  * MTTS (MUD Terminal Type Standard)
@@ -458,6 +462,7 @@ typedef struct {
     char* terminal_type;                /**< Terminal type we advertise (cycle 2) */
 } telnetty_mtts_data_t;
 
+#ifdef TELNETTY_MUD_IMPLEMENTATION
 /**
  * MTTS option handler
  * 
@@ -466,7 +471,7 @@ typedef struct {
  * @param command Command received
  * @param user_data User data (should be telnetty_mtts_data_t*)
  */
-static void telnetty_mtts_handler(
+static TELNETTY_UNUSED void telnetty_mtts_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -496,7 +501,7 @@ static TELNETTY_UNUSED uint64_t telnetty_mtts_get_flags(telnetty_context_t* ctx)
  * @param flag Flag to check
  * @return true if flag is set, false otherwise
  */
-static bool telnetty_mtts_has_flag(
+static TELNETTY_UNUSED bool telnetty_mtts_has_flag(
     telnetty_context_t* ctx,
     telnetty_mtts_flag_t flag
 );
@@ -509,7 +514,7 @@ static bool telnetty_mtts_has_flag(
  * @param version Output client version (optional)
  * @return 0 if info available, -1 otherwise
  */
-static int telnetty_mtts_get_client_info(
+static TELNETTY_UNUSED int telnetty_mtts_get_client_info(
     telnetty_context_t* ctx,
     const char** name,
     const char** version
@@ -524,12 +529,13 @@ static int telnetty_mtts_get_client_info(
  * @param client_version Client version
  * @return 0 on success, -1 on failure
  */
-static int telnetty_mtts_send_response(
+static TELNETTY_UNUSED int telnetty_mtts_send_response(
     telnetty_context_t* ctx,
     uint64_t flags,
     const char* client_name,
     const char* client_version
 );
+#endif /* TELNETTY_MUD_IMPLEMENTATION */
 
 /* ============================================================================
  * MSSP (MUD Server Status Protocol)
@@ -558,6 +564,7 @@ typedef struct {
     bool auto_send;                     /**< Auto-send on connection */
 } telnetty_mssp_data_t;
 
+#ifdef TELNETTY_MUD_IMPLEMENTATION
 /**
  * MSSP option handler
  * 
@@ -566,7 +573,7 @@ typedef struct {
  * @param command Command received
  * @param user_data User data (should be telnetty_mssp_data_t*)
  */
-static void telnetty_mssp_handler(
+static TELNETTY_UNUSED void telnetty_mssp_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -580,7 +587,7 @@ static void telnetty_mssp_handler(
  * @param auto_send Auto-send MSSP data on connection
  * @return 0 on success, -1 on failure
  */
-static int telnetty_enable_mssp(
+static TELNETTY_UNUSED int telnetty_enable_mssp(
     telnetty_context_t* ctx,
     bool auto_send
 );
@@ -593,7 +600,7 @@ static int telnetty_enable_mssp(
  * @param value Variable value
  * @return 0 on success, -1 on failure
  */
-static int telnetty_mssp_add(
+static TELNETTY_UNUSED int telnetty_mssp_add(
     telnetty_context_t* ctx,
     const char* name,
     const char* value
@@ -627,7 +634,7 @@ static TELNETTY_UNUSED int telnetty_mssp_clear(telnetty_context_t* ctx);
  * @param max_players Maximum player count
  * @return 0 on success, -1 on failure
  */
-static int telnetty_mssp_set_standard_vars(
+static TELNETTY_UNUSED int telnetty_mssp_set_standard_vars(
     telnetty_context_t* ctx,
     const char* server_name,
     const char* server_type,
@@ -636,6 +643,7 @@ static int telnetty_mssp_set_standard_vars(
     int player_count,
     int max_players
 );
+#endif /* TELNETTY_MUD_IMPLEMENTATION */
 
 /* ============================================================================
  * MSP (MUD Sound Protocol) — TELOPT 90
@@ -682,6 +690,7 @@ typedef struct {
     bool enabled;
 } telnetty_msp_data_t;
 
+#ifdef TELNETTY_MUD_IMPLEMENTATION
 /**
  * Enable MSP: register the TELOPT 90 handler and install a data-stream
  * hook that scans for !!SOUND / !!MUSIC triggers before they reach the
@@ -693,6 +702,7 @@ static TELNETTY_UNUSED int telnetty_enable_msp(
     telnetty_msp_callback_t cb,
     void* user_data
 );
+#endif /* TELNETTY_MUD_IMPLEMENTATION */
 
 /* ============================================================================
  * ATCP (Achaea Telnet Client Protocol) — TELOPT 200
@@ -728,6 +738,7 @@ typedef struct {
     bool enabled;
 } telnetty_atcp_data_t;
 
+#ifdef TELNETTY_MUD_IMPLEMENTATION
 /**
  * Enable ATCP (TELOPT 200). Registers WILL, installs the SB handler,
  * and dispatches inbound frames to `cb`. `cb` may be NULL; in that case
@@ -751,6 +762,7 @@ static TELNETTY_UNUSED int telnetty_atcp_send(
     const uint8_t* payload,
     size_t payload_len
 );
+#endif /* TELNETTY_MUD_IMPLEMENTATION */
 
 /* ============================================================================
  * ZMP (Zenith MUD Protocol) — TELOPT 93
@@ -797,6 +809,7 @@ typedef struct {
     telnetty_mxp_mode_t mode;
 } telnetty_mxp_data_t;
 
+#ifdef TELNETTY_MUD_IMPLEMENTATION
 /** Enable the MXP option and scan negotiated DATA for complete inline tags.
  * Names and attributes are transient, read-only strings. This is a tokenizer:
  * applications remain responsible for deciding which received tags to trust.
@@ -808,6 +821,7 @@ static TELNETTY_UNUSED int telnetty_enable_mxp(
 static TELNETTY_UNUSED int telnetty_mxp_set_mode(
     telnetty_context_t* ctx, telnetty_mxp_mode_t mode
 );
+#endif /* TELNETTY_MUD_IMPLEMENTATION */
 
 typedef void (*telnetty_zmp_callback_t)(
     telnetty_context_t* ctx,
@@ -823,6 +837,7 @@ typedef struct {
     bool enabled;
 } telnetty_zmp_data_t;
 
+#ifdef TELNETTY_MUD_IMPLEMENTATION
 /**
  * Enable ZMP (TELOPT 93). `cb` may be NULL to negotiate without a
  * dispatcher. `argv` inside the callback is transient — copy anything
@@ -845,6 +860,7 @@ static TELNETTY_UNUSED int telnetty_zmp_send(
     const char* command,
     const char* const* argv
 );
+#endif /* TELNETTY_MUD_IMPLEMENTATION */
 
 /* ============================================================================
  * Implementation
@@ -871,13 +887,18 @@ static TELNETTY_UNUSED int telnetty_zmp_send(
 #define TELNETTY_MUD_REALLOC(ptr, size) realloc(ptr, size)
 #endif
 
+/* strdup is POSIX, not C99, and allocates with libc malloc rather than
+ * TELNETTY_MUD_MALLOC, which these strings are freed with. */
+static TELNETTY_UNUSED char* telnetty__mud_strdup(const char* s) {
+    size_t n = strlen(s);
+    char* out = (char*)TELNETTY_MUD_MALLOC(n + 1);
+    if (out) memcpy(out, s, n + 1);
+    return out;
+}
+
 /* Forward declarations for internal functions */
 static TELNETTY_UNUSED telnetty_msdp_data_t* telnetty_msdp_data_create(void);
 static TELNETTY_UNUSED void telnetty_msdp_data_destroy(telnetty_msdp_data_t* data);
-static int telnetty_msdp_send_variable(
-    telnetty_context_t* ctx,
-    telnetty_msdp_variable_t* var
-);
 static TELNETTY_UNUSED telnetty_gmcp_data_t* telnetty_gmcp_data_create(void);
 static TELNETTY_UNUSED void telnetty_gmcp_data_destroy(telnetty_gmcp_data_t* data);
 static TELNETTY_UNUSED telnetty_mtts_data_t* telnetty_mtts_data_create(void);
@@ -926,12 +947,12 @@ static TELNETTY_UNUSED void telnetty_msdp_data_destroy(telnetty_msdp_data_t* dat
     TELNETTY_MUD_FREE(data);
 }
 
-static void telnetty_msdp_data_free(void* p) {
+static TELNETTY_UNUSED void telnetty_msdp_data_free(void* p) {
     telnetty_msdp_data_destroy((telnetty_msdp_data_t*)p);
 }
 
 /* Q-method already answered. This only records the outcome. */
-static void telnetty_msdp_handler(
+static TELNETTY_UNUSED void telnetty_msdp_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -947,7 +968,7 @@ static void telnetty_msdp_handler(
 
 /* Recursive walker: emits structured events into rec_handler. `path_stack`
  * holds ancestor VAR names dot-joined lazily on each fire. */
-static void telnetty__msdp_walk_recursive(
+static TELNETTY_UNUSED void telnetty__msdp_walk_recursive(
     telnetty_context_t* ctx,
     telnetty_msdp_data_t* msdp,
     const uint8_t* data,
@@ -1037,12 +1058,12 @@ static void telnetty__msdp_walk_recursive(
     #undef BUILD_PATH
 }
 
-static telnetty_msdp_data_t* telnetty__msdp_of(telnetty_context_t* ctx) {
+static TELNETTY_UNUSED telnetty_msdp_data_t* telnetty__msdp_of(telnetty_context_t* ctx) {
     telnetty_option_t* opt = ctx ? ctx->options[TELNETTY_TELOPT_MSDP] : NULL;
     return (opt && opt->user_data) ? (telnetty_msdp_data_t*)opt->user_data : NULL;
 }
 
-static telnetty_msdp_variable_t* telnetty__msdp_find(telnetty_msdp_data_t* d, const char* name) {
+static TELNETTY_UNUSED telnetty_msdp_variable_t* telnetty__msdp_find(telnetty_msdp_data_t* d, const char* name) {
     for (size_t i = 0; i < d->variable_count; i++) {
         if (strcmp(d->variables[i].name, name) == 0) return &d->variables[i];
     }
@@ -1050,7 +1071,7 @@ static telnetty_msdp_variable_t* telnetty__msdp_find(telnetty_msdp_data_t* d, co
 }
 
 /* Find or append `name` in the variable table. */
-static telnetty_msdp_variable_t* telnetty__msdp_slot(telnetty_msdp_data_t* d, const char* name) {
+static TELNETTY_UNUSED telnetty_msdp_variable_t* telnetty__msdp_slot(telnetty_msdp_data_t* d, const char* name) {
     telnetty_msdp_variable_t* v = telnetty__msdp_find(d, name);
     if (v) return v;
     if (d->variable_count == d->capacity) {
@@ -1072,7 +1093,7 @@ static telnetty_msdp_variable_t* telnetty__msdp_slot(telnetty_msdp_data_t* d, co
 }
 
 /* Record a scalar value; on allocation failure the old value stays. */
-static telnetty_msdp_variable_t* telnetty__msdp_store(telnetty_msdp_data_t* d,
+static TELNETTY_UNUSED telnetty_msdp_variable_t* telnetty__msdp_store(telnetty_msdp_data_t* d,
                                                       const char* name, const char* value) {
     telnetty_msdp_variable_t* v = telnetty__msdp_slot(d, name);
     if (!v) return NULL;
@@ -1086,7 +1107,7 @@ static telnetty_msdp_variable_t* telnetty__msdp_store(telnetty_msdp_data_t* d,
     return v;
 }
 
-static void telnetty_msdp_sb(
+static TELNETTY_UNUSED void telnetty_msdp_sb(
     telnetty_context_t* ctx, uint8_t option,
     const uint8_t* data, size_t length, void* user_data
 ) {
@@ -1147,7 +1168,7 @@ static TELNETTY_UNUSED int telnetty_msdp_set_recursive_callback(
     return 0;
 }
 
-static int telnetty_enable_msdp(
+static TELNETTY_UNUSED int telnetty_enable_msdp(
     telnetty_context_t* ctx,
     telnetty_msdp_handler_t handler,
     void* user_data
@@ -1164,7 +1185,7 @@ static int telnetty_enable_msdp(
     return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_MSDP);
 }
 
-static int telnetty_msdp_send(
+static TELNETTY_UNUSED int telnetty_msdp_send(
     telnetty_context_t* ctx,
     const char* var,
     const char* val
@@ -1207,7 +1228,7 @@ static int telnetty_msdp_send(
     return result;
 }
 
-static int telnetty_msdp_sendf(
+static TELNETTY_UNUSED int telnetty_msdp_sendf(
     telnetty_context_t* ctx,
     const char* var,
     const char* fmt,
@@ -1248,7 +1269,7 @@ static int telnetty_msdp_sendf(
     return result;
 }
 
-static int telnetty_msdp_request(
+static TELNETTY_UNUSED int telnetty_msdp_request(
     telnetty_context_t* ctx,
     const char* var
 ) {
@@ -1280,7 +1301,7 @@ static int telnetty_msdp_request(
 /* Flags live on the variable table entry; setting flags on an unknown
  * variable creates it (with no value) so a server can declare REPORTABLE /
  * SENDABLE variables up front. */
-static int telnetty_msdp_set_flags(
+static TELNETTY_UNUSED int telnetty_msdp_set_flags(
     telnetty_context_t* ctx,
     const char* var,
     uint32_t flags
@@ -1293,7 +1314,7 @@ static int telnetty_msdp_set_flags(
     return 0;
 }
 
-static int telnetty_msdp_clear_flags(
+static TELNETTY_UNUSED int telnetty_msdp_clear_flags(
     telnetty_context_t* ctx,
     const char* var,
     uint32_t flags
@@ -1306,7 +1327,7 @@ static int telnetty_msdp_clear_flags(
     return 0;
 }
 
-static const char* telnetty_msdp_get(
+static TELNETTY_UNUSED const char* telnetty_msdp_get(
     telnetty_context_t* ctx,
     const char* var
 ) {
@@ -1316,7 +1337,7 @@ static const char* telnetty_msdp_get(
     return v ? v->value : NULL;
 }
 
-static int telnetty_msdp_remove(
+static TELNETTY_UNUSED int telnetty_msdp_remove(
     telnetty_context_t* ctx,
     const char* var
 ) {
@@ -1370,18 +1391,18 @@ static TELNETTY_UNUSED void telnetty_gmcp_data_destroy(telnetty_gmcp_data_t* dat
     TELNETTY_MUD_FREE(data);
 }
 
-static void telnetty_gmcp_data_free(void* p) {
+static TELNETTY_UNUSED void telnetty_gmcp_data_free(void* p) {
     telnetty_gmcp_data_destroy((telnetty_gmcp_data_t*)p);
 }
 
-static void telnetty_gmcp_sb(
+static TELNETTY_UNUSED void telnetty_gmcp_sb(
     telnetty_context_t* ctx, uint8_t option,
     const uint8_t* data, size_t length, void* user_data
 ) {
     (void)option;
     telnetty_gmcp_data_t* gd = (telnetty_gmcp_data_t*)user_data;
     if (!gd || !gd->handler || !data || length == 0) return;
-    const char* sp = memchr(data, ' ', length);
+    const char* sp = (const char*)memchr(data, ' ', length);
     char package[128];
     char message[128];
     const char* json = "";
@@ -1417,7 +1438,7 @@ static void telnetty_gmcp_sb(
     TELNETTY_MUD_FREE(jsonbuf);
 }
 
-static void telnetty_gmcp_handler(
+static TELNETTY_UNUSED void telnetty_gmcp_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -1439,7 +1460,7 @@ static void telnetty_gmcp_handler(
     }
 }
 
-static int telnetty_enable_gmcp(
+static TELNETTY_UNUSED int telnetty_enable_gmcp(
     telnetty_context_t* ctx,
     telnetty_gmcp_handler_t handler,
     void* user_data
@@ -1456,7 +1477,7 @@ static int telnetty_enable_gmcp(
     return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_GMCP);
 }
 
-static int telnetty_gmcp_send(
+static TELNETTY_UNUSED int telnetty_gmcp_send(
     telnetty_context_t* ctx,
     const char* module,
     const char* message,
@@ -1499,7 +1520,7 @@ static int telnetty_gmcp_send(
     return result;
 }
 
-static int telnetty_gmcp_sendf(
+static TELNETTY_UNUSED int telnetty_gmcp_sendf(
     telnetty_context_t* ctx,
     const char* module,
     const char* message,
@@ -1540,14 +1561,14 @@ static int telnetty_gmcp_sendf(
     return result;
 }
 
-static int telnetty__gmcp_send_supports_verb(
+static TELNETTY_UNUSED int telnetty__gmcp_send_supports_verb(
     telnetty_context_t* ctx,
     const char* verb,
     const char* const* modules,
     size_t count
 );
 
-static telnetty_gmcp_data_t* telnetty__gmcp_of(telnetty_context_t* ctx) {
+static TELNETTY_UNUSED telnetty_gmcp_data_t* telnetty__gmcp_of(telnetty_context_t* ctx) {
     telnetty_option_t* opt = ctx ? ctx->options[TELNETTY_TELOPT_GMCP] : NULL;
     return (opt && opt->user_data) ? (telnetty_gmcp_data_t*)opt->user_data : NULL;
 }
@@ -1555,7 +1576,7 @@ static telnetty_gmcp_data_t* telnetty__gmcp_of(telnetty_context_t* ctx) {
 /* Track a module we support. Once GMCP is up the change is announced with
  * Core.Supports.Add / .Remove; modules registered before that go out in
  * the Core.Supports.Set that follows Core.Hello. */
-static int telnetty_gmcp_register_module(
+static TELNETTY_UNUSED int telnetty_gmcp_register_module(
     telnetty_context_t* ctx,
     const char* module
 ) {
@@ -1580,7 +1601,7 @@ static int telnetty_gmcp_register_module(
     return telnetty__gmcp_send_supports_verb(ctx, "Add", one, 1);
 }
 
-static int telnetty_gmcp_unregister_module(
+static TELNETTY_UNUSED int telnetty_gmcp_unregister_module(
     telnetty_context_t* ctx,
     const char* module
 ) {
@@ -1602,7 +1623,7 @@ static int telnetty_gmcp_unregister_module(
     return -1;
 }
 
-static int telnetty_gmcp_send_hello(
+static TELNETTY_UNUSED int telnetty_gmcp_send_hello(
     telnetty_context_t* ctx,
     const char* client,
     const char* version
@@ -1617,7 +1638,7 @@ static int telnetty_gmcp_send_hello(
 }
 
 /* Core.Supports.<verb> ["mod", ...] with JSON string escaping. */
-static int telnetty__gmcp_send_supports_verb(
+static TELNETTY_UNUSED int telnetty__gmcp_send_supports_verb(
     telnetty_context_t* ctx,
     const char* verb,
     const char* const* modules,
@@ -1682,7 +1703,7 @@ static int telnetty__gmcp_send_supports_verb(
     return result;
 }
 
-static int telnetty_gmcp_send_supports(
+static TELNETTY_UNUSED int telnetty_gmcp_send_supports(
     telnetty_context_t* ctx,
     const char* const* modules,
     size_t count
@@ -1711,11 +1732,11 @@ static TELNETTY_UNUSED void telnetty_mtts_data_destroy(telnetty_mtts_data_t* dat
     TELNETTY_MUD_FREE(data);
 }
 
-static void telnetty_mtts_data_free(void* p) {
+static TELNETTY_UNUSED void telnetty_mtts_data_free(void* p) {
     telnetty_mtts_data_destroy((telnetty_mtts_data_t*)p);
 }
 
-static telnetty_mtts_data_t* telnetty_mtts_of(telnetty_context_t* ctx) {
+static TELNETTY_UNUSED telnetty_mtts_data_t* telnetty_mtts_of(telnetty_context_t* ctx) {
     if (!ctx) return NULL;
     telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_TTYPE];
     return (opt && opt->user_data) ? (telnetty_mtts_data_t*)opt->user_data : NULL;
@@ -1726,7 +1747,7 @@ static telnetty_mtts_data_t* telnetty_mtts_of(telnetty_context_t* ctx) {
 #define TELNETTY_TTYPE_SEND 1
 
 /* Send one cycle of the three-cycle TTYPE IS response as a client. */
-static void telnetty_mtts_send_cycle(telnetty_context_t* ctx, telnetty_mtts_data_t* d) {
+static TELNETTY_UNUSED void telnetty_mtts_send_cycle(telnetty_context_t* ctx, telnetty_mtts_data_t* d) {
     uint8_t buf[128];
     size_t off = 0;
     buf[off++] = TELNETTY_TTYPE_IS;
@@ -1755,7 +1776,7 @@ static void telnetty_mtts_send_cycle(telnetty_context_t* ctx, telnetty_mtts_data
 /* SB handler: peer (server) sent IAC SB TTYPE ... IAC SE. When the payload
  * is `SEND`, respond with the next cycle. When it's `IS <name>`, capture
  * the name into `client_name` for later inspection. */
-static void telnetty_mtts_sb_handler(
+static TELNETTY_UNUSED void telnetty_mtts_sb_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     const uint8_t* data,
@@ -1809,7 +1830,7 @@ static void telnetty_mtts_sb_handler(
 
 /* Option handler: called when TTYPE negotiation settles. As a client we
  * accept DO by leaving state in place; server pushes SEND via subneg. */
-static void telnetty_mtts_handler(
+static TELNETTY_UNUSED void telnetty_mtts_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -1847,7 +1868,7 @@ static TELNETTY_UNUSED uint64_t telnetty_mtts_get_flags(telnetty_context_t* ctx)
     return d ? d->flags : 0;
 }
 
-static bool telnetty_mtts_has_flag(
+static TELNETTY_UNUSED bool telnetty_mtts_has_flag(
     telnetty_context_t* ctx,
     telnetty_mtts_flag_t flag
 ) {
@@ -1855,7 +1876,7 @@ static bool telnetty_mtts_has_flag(
     return (flags & (uint64_t)flag) != 0;
 }
 
-static int telnetty_mtts_get_client_info(
+static TELNETTY_UNUSED int telnetty_mtts_get_client_info(
     telnetty_context_t* ctx,
     const char** name,
     const char** version
@@ -1870,7 +1891,7 @@ static int telnetty_mtts_get_client_info(
 /* Configure the client-side MTTS response before negotiation, or override
  * after enable_mtts. Ownership: strings are duplicated so the caller may
  * free their originals immediately. */
-static int telnetty_mtts_send_response(
+static TELNETTY_UNUSED int telnetty_mtts_send_response(
     telnetty_context_t* ctx,
     uint64_t flags,
     const char* client_name,
@@ -1940,17 +1961,17 @@ static TELNETTY_UNUSED void telnetty_mssp_data_destroy(telnetty_mssp_data_t* dat
     TELNETTY_MUD_FREE(data);
 }
 
-static void telnetty_mssp_data_free(void* p) {
+static TELNETTY_UNUSED void telnetty_mssp_data_free(void* p) {
     telnetty_mssp_data_destroy((telnetty_mssp_data_t*)p);
 }
 
-static telnetty_mssp_data_t* telnetty_mssp_of(telnetty_context_t* ctx) {
+static TELNETTY_UNUSED telnetty_mssp_data_t* telnetty_mssp_of(telnetty_context_t* ctx) {
     if (!ctx) return NULL;
     telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_MSSP];
     return (opt && opt->user_data) ? (telnetty_mssp_data_t*)opt->user_data : NULL;
 }
 
-static void telnetty_mssp_handler(
+static TELNETTY_UNUSED void telnetty_mssp_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -1963,7 +1984,7 @@ static void telnetty_mssp_handler(
         telnetty_mssp_send(ctx);
 }
 
-static int telnetty_enable_mssp(
+static TELNETTY_UNUSED int telnetty_enable_mssp(
     telnetty_context_t* ctx,
     bool auto_send
 ) {
@@ -1977,7 +1998,7 @@ static int telnetty_enable_mssp(
     return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_MSSP);
 }
 
-static int telnetty_mssp_add(
+static TELNETTY_UNUSED int telnetty_mssp_add(
     telnetty_context_t* ctx,
     const char* name,
     const char* value
@@ -1987,7 +2008,7 @@ static int telnetty_mssp_add(
     for (size_t i = 0; i < data->variable_count; i++) {
         if (data->variables[i].name && strcmp(data->variables[i].name, name) == 0) {
             TELNETTY_MUD_FREE(data->variables[i].value);
-            data->variables[i].value = value ? strdup(value) : strdup("");
+            data->variables[i].value = value ? telnetty__mud_strdup(value) : telnetty__mud_strdup("");
             return data->variables[i].value ? 0 : -1;
         }
     }
@@ -2001,8 +2022,8 @@ static int telnetty_mssp_add(
         data->capacity = nc;
     }
     telnetty_mssp_variable_t* slot = &data->variables[data->variable_count];
-    slot->name = strdup(name);
-    slot->value = strdup(value ? value : "");
+    slot->name = telnetty__mud_strdup(name);
+    slot->value = telnetty__mud_strdup(value ? value : "");
     if (!slot->name || !slot->value) return -1;
     data->variable_count++;
     return 0;
@@ -2048,7 +2069,7 @@ static TELNETTY_UNUSED int telnetty_mssp_clear(telnetty_context_t* ctx) {
     return 0;
 }
 
-static int telnetty_mssp_set_standard_vars(
+static TELNETTY_UNUSED int telnetty_mssp_set_standard_vars(
     telnetty_context_t* ctx,
     const char* server_name,
     const char* server_type,
@@ -2086,9 +2107,9 @@ static int telnetty_mssp_set_standard_vars(
  * MSP (MUD Sound Protocol) — TELOPT 90 implementation
  * ============================================================================ */
 
-static void telnetty_msp_data_free(void* p) { TELNETTY_MUD_FREE(p); }
+static TELNETTY_UNUSED void telnetty_msp_data_free(void* p) { TELNETTY_MUD_FREE(p); }
 
-static telnetty_msp_data_t* telnetty__msp_of(telnetty_context_t* ctx) {
+static TELNETTY_UNUSED telnetty_msp_data_t* telnetty__msp_of(telnetty_context_t* ctx) {
     if (!ctx) return NULL;
     telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_MSP];
     return (opt && opt->user_data) ? (telnetty_msp_data_t*)opt->user_data : NULL;
@@ -2097,7 +2118,7 @@ static telnetty_msp_data_t* telnetty__msp_of(telnetty_context_t* ctx) {
 /* Parse a single K=V argument. `key` is one uppercase letter; value is
  * the token that follows up to space or ')'. Numeric args land in *ival;
  * string args (T=, U=) copy into out with size cap. */
-static int telnetty__msp_arg(
+static TELNETTY_UNUSED int telnetty__msp_arg(
     const char* p, const char* end,
     char key, int* ival, char* out, size_t out_sz
 ) {
@@ -2125,7 +2146,7 @@ static int telnetty__msp_arg(
  * `start`. Returns the offset just past the closing ')' on match, or 0
  * on no match. Fills *trig on match. `file_buf`, `type_buf`, `url_buf`
  * are caller-supplied scratch storage. */
-static size_t telnetty__msp_parse_one(
+static TELNETTY_UNUSED size_t telnetty__msp_parse_one(
     const char* data, size_t len, size_t start,
     telnetty_msp_trigger_t* trig,
     char* file_buf, size_t file_sz,
@@ -2184,7 +2205,7 @@ static size_t telnetty__msp_parse_one(
 /* HIGH-priority extended DATA handler: peek the payload for MSP triggers
  * and dispatch each. The original DATA callback still fires afterward
  * with the full untouched payload (we don't rewrite in-flight data). */
-static void telnetty__msp_data_hook(
+static TELNETTY_UNUSED void telnetty__msp_data_hook(
     telnetty_context_t* ctx, telnetty_event_type_t ev,
     const telnetty_event_data_union_t* d, void* ud,
     telnetty_event_priority_t prio
@@ -2216,7 +2237,7 @@ static void telnetty__msp_data_hook(
     }
 }
 
-static void telnetty_msp_handler(
+static TELNETTY_UNUSED void telnetty_msp_handler(
     telnetty_context_t* ctx, uint8_t option, uint8_t command, void* user_data
 ) {
     (void)ctx; (void)option; (void)command;
@@ -2235,31 +2256,41 @@ static TELNETTY_UNUSED int telnetty_enable_msp(
     void* user_data
 ) {
     if (!ctx) return -1;
+#ifndef TELNETTY_EVENTS_IMPLEMENTATION
+    /* The trigger scanner is an extended-event DATA handler, which needs
+     * TELNETTY_EVENTS_IMPLEMENTATION in this translation unit. */
+    (void)cb; (void)user_data;
+    return -1;
+#else
     telnetty_msp_data_t* m = (telnetty_msp_data_t*)TELNETTY_MUD_MALLOC(sizeof(*m));
     if (!m) return -1;
     memset(m, 0, sizeof(*m));
     m->cb = cb;
     m->user_data = user_data;
 
+    /* HIGH-priority DATA scanner fires before the app's own handler. */
+    if (telnetty_register_event_handler(ctx, TELNETTY_EVENT_DATA,
+                                        telnetty__msp_data_hook, m,
+                                        TELNETTY_PRIORITY_HIGH) != 0) {
+        TELNETTY_MUD_FREE(m);
+        return -1;
+    }
     telnetty_set_option_support(ctx, TELNETTY_TELOPT_MSP, 1, 1);
     telnetty_register_option(ctx, TELNETTY_TELOPT_MSP,
                              telnetty_msp_handler, NULL);
     telnetty_option_set_user_data(ctx, TELNETTY_TELOPT_MSP, m,
                                   telnetty_msp_data_free);
-    /* HIGH-priority DATA scanner fires before the app's own handler. */
-    telnetty_register_event_handler(ctx, TELNETTY_EVENT_DATA,
-                                    telnetty__msp_data_hook, m,
-                                    TELNETTY_PRIORITY_HIGH);
     return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_MSP);
+#endif
 }
 
 /* ============================================================================
  * ATCP (TELOPT 200) implementation
  * ============================================================================ */
 
-static void telnetty_atcp_data_free(void* p) { TELNETTY_MUD_FREE(p); }
+static TELNETTY_UNUSED void telnetty_atcp_data_free(void* p) { TELNETTY_MUD_FREE(p); }
 
-static void telnetty_atcp_sb(
+static TELNETTY_UNUSED void telnetty_atcp_sb(
     telnetty_context_t* ctx, uint8_t option,
     const uint8_t* data, size_t length, void* user_data
 ) {
@@ -2308,7 +2339,7 @@ static void telnetty_atcp_sb(
     a->cb(ctx, pkg, msg, payload, payload_len, a->user_data);
 }
 
-static void telnetty_atcp_handler(
+static TELNETTY_UNUSED void telnetty_atcp_handler(
     telnetty_context_t* ctx, uint8_t option, uint8_t command, void* user_data
 ) {
     (void)ctx; (void)option;
@@ -2375,9 +2406,9 @@ static TELNETTY_UNUSED int telnetty_atcp_send(
  * ZMP (TELOPT 93) implementation
  * ============================================================================ */
 
-static void telnetty__mxp_free(void* p) { TELNETTY_MUD_FREE(p); }
+static TELNETTY_UNUSED void telnetty__mxp_free(void* p) { TELNETTY_MUD_FREE(p); }
 
-static void telnetty__mxp_tag(telnetty_context_t* ctx, telnetty_mxp_data_t* m) {
+static TELNETTY_UNUSED void telnetty__mxp_tag(telnetty_context_t* ctx, telnetty_mxp_data_t* m) {
     size_t a = 0, b = m->length;
     bool closing = a < b && m->tag[a] == '/';
     if (closing) a++;
@@ -2393,7 +2424,7 @@ static void telnetty__mxp_tag(telnetty_context_t* ctx, telnetty_mxp_data_t* m) {
     m->tag[n] = saved;
 }
 
-static void telnetty__mxp_data(telnetty_context_t* ctx, telnetty_event_type_t ev,
+static TELNETTY_UNUSED void telnetty__mxp_data(telnetty_context_t* ctx, telnetty_event_type_t ev,
     const telnetty_event_data_union_t* d, void* ud, telnetty_event_priority_t prio) {
     (void)prio;
     telnetty_mxp_data_t* m = (telnetty_mxp_data_t*)ud;
@@ -2410,7 +2441,7 @@ static void telnetty__mxp_data(telnetty_context_t* ctx, telnetty_event_type_t ev
     }
 }
 
-static void telnetty__mxp_option(telnetty_context_t* ctx, uint8_t option,
+static TELNETTY_UNUSED void telnetty__mxp_option(telnetty_context_t* ctx, uint8_t option,
                                   uint8_t command, void* ud) {
     (void)ctx; (void)option;
     telnetty_mxp_data_t* m = (telnetty_mxp_data_t*)ud;
@@ -2427,6 +2458,11 @@ static TELNETTY_UNUSED int telnetty_enable_mxp(telnetty_context_t* ctx,
         prior->length = 0; prior->in_tag = false; prior->quoted = false;
         return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_MXP);
     }
+#ifndef TELNETTY_EVENTS_IMPLEMENTATION
+    /* The tag tokenizer is an extended-event DATA handler, which needs
+     * TELNETTY_EVENTS_IMPLEMENTATION in this translation unit. */
+    return -1;
+#else
     telnetty_mxp_data_t* m = (telnetty_mxp_data_t*)TELNETTY_MUD_MALLOC(sizeof(*m));
     if (!m) return -1;
     memset(m, 0, sizeof(*m)); m->cb = cb; m->user_data = user_data;
@@ -2440,6 +2476,7 @@ static TELNETTY_UNUSED int telnetty_enable_mxp(telnetty_context_t* ctx,
     }
     telnetty_option_set_user_data(ctx, TELNETTY_TELOPT_MXP, m, telnetty__mxp_free);
     return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_MXP);
+#endif
 }
 
 static TELNETTY_UNUSED int telnetty_mxp_set_mode(telnetty_context_t* ctx,
@@ -2452,14 +2489,14 @@ static TELNETTY_UNUSED int telnetty_mxp_set_mode(telnetty_context_t* ctx,
     return 0;
 }
 
-static void telnetty_zmp_data_free(void* p) { TELNETTY_MUD_FREE(p); }
+static TELNETTY_UNUSED void telnetty_zmp_data_free(void* p) { TELNETTY_MUD_FREE(p); }
 
 /* Small stack-friendly argv cap. ZMP messages in the wild are typically
  * a handful of args; anything past this cap is silently truncated to
  * argv_cap - 1 rather than dropping the whole frame. */
 #define TELNETTY_ZMP_MAX_ARGV 32
 
-static void telnetty_zmp_sb(
+static TELNETTY_UNUSED void telnetty_zmp_sb(
     telnetty_context_t* ctx, uint8_t option,
     const uint8_t* data, size_t length, void* user_data
 ) {
@@ -2497,7 +2534,7 @@ static void telnetty_zmp_sb(
     z->cb(ctx, cmd, argv, argc, z->user_data);
 }
 
-static void telnetty_zmp_handler(
+static TELNETTY_UNUSED void telnetty_zmp_handler(
     telnetty_context_t* ctx, uint8_t option, uint8_t command, void* user_data
 ) {
     (void)ctx; (void)option;

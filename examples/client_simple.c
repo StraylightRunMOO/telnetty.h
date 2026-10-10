@@ -1,564 +1,198 @@
 /**
- * @file example_client_simple.c
- * @brief Simple single-threaded Telnetty client example
- * 
- * This example demonstrates a basic Telnetty client that connects to a server
- * and demonstrates various Telnetty features including color support and
- * protocol negotiation.
- * 
- * Features demonstrated:
- * - Telnetty connection establishment
- * - Option negotiation
- * - Color support
- * - Interactive I/O handling
- * 
- * @author Damus <damus@straylightrun.org>
- * @version 1.0.0
- * 
+ * @file client_simple.c
+ * @brief A minimal line-mode TELNET client
+ *
+ * The client side of the integration loop:
+ *
+ * - declares which options it accepts before any server bytes arrive
+ * - answers TTYPE with $TERM and NAWS with the terminal size
+ * - inflates the server's MCCP2 stream and compresses its own input with
+ *   MCCP3 when the server offers them (telnetty does both inside
+ *   telnetty_process / telnetty_send)
+ * - prints DATA to stdout, sends typed lines with CR LF line endings
+ *
+ * The terminal stays in normal line mode, so when the server turns on ECHO
+ * your typing is shown twice; a full client would switch the tty to raw
+ * mode on the server's WILL ECHO.
+ *
+ * Usage: client_simple [host] [port]   (default localhost 4000)
  */
 
-/* Suppress warnings for extended event types in switch statements */
-#ifdef __clang__
-#pragma clang diagnostic ignored "-Wswitch"
-#elif defined(__GNUC__)
-#pragma GCC diagnostic ignored "-Wswitch"
-#endif
-
+#include <errno.h>
+#include <netdb.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/socket.h>
-#include <sys/select.h>
-#include <sys/time.h>
 #include <sys/ioctl.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <errno.h>
-#include <termios.h>
-#include <fcntl.h>
+#include <sys/socket.h>
 
 #define TELNETTY_IMPLEMENTATION
-#define TELNETTY_EVENTS_IMPLEMENTATION
-#define TELNETTY_BUFFER_IMPLEMENTATION
 #define TELNETTY_OPTIONS_IMPLEMENTATION
-#define TELNETTY_MUD_IMPLEMENTATION
 #define TELNETTY_COMPRESSION_IMPLEMENTATION
-#define TELNETTY_COLOR_IMPLEMENTATION
 
 #include "telnetty_core.h"
-#include "telnetty_events.h"
-#include "telnetty_buffer.h"
 #include "telnetty_options.h"
-#include "telnetty_mud.h"
 #include "telnetty_compression.h"
-#include "telnetty_color.h"
 
-/* ============================================================================
- * Configuration
- * ============================================================================ */
+static int sock = -1;
 
-#define BUFFER_SIZE 4096
-#define MAX_LINE_LENGTH 1024
-
-/* ============================================================================
- * Client State
- * ============================================================================ */
-
-typedef struct {
-    int fd;                             /* Server socket */
-    telnetty_context_t* telnetty_ctx;       /* Telnetty context */
-    char* buffer;                       /* I/O buffer */
-    size_t buffer_size;                 /* Buffer size */
-    char* server_name;                  /* Server name */
-    bool connected;                     /* Connected to server */
-    bool echo_enabled;                  /* Local echo enabled */
-    uint16_t window_width;              /* Terminal width */
-    uint16_t window_height;             /* Terminal height */
-    struct termios saved_termios;       /* Saved terminal settings */
-} client_t;
-
-static client_t client = {0};
-
-/* ============================================================================
- * Terminal Management
- * ============================================================================ */
-
-/**
- * Set terminal to raw mode for interactive input
- */
-static void set_raw_mode(void) {
-    struct termios raw;
-    
-    /* Get current terminal settings */
-    tcgetattr(STDIN_FILENO, &client.saved_termios);
-    
-    /* Copy and modify */
-    raw = client.saved_termios;
-    raw.c_lflag &= ~(ECHO | ICANON);
-    raw.c_cc[VMIN] = 1;
-    raw.c_cc[VTIME] = 0;
-    
-    /* Apply new settings */
-    tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
-}
-
-/**
- * Restore terminal settings
- */
-static void restore_terminal(void) {
-    tcsetattr(STDIN_FILENO, TCSAFLUSH, &client.saved_termios);
-}
-
-/**
- * Get terminal window size
- */
-static void get_window_size(void) {
-    struct winsize w;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0) {
-        client.window_width = w.ws_col;
-        client.window_height = w.ws_row;
-    } else {
-        client.window_width = 80;
-        client.window_height = 24;
+/* Write everything telnetty queued, then reset its buffer. */
+static int flush_output(telnetty_context_t* ctx) {
+    telnetty_buffer_t* out = telnetty_get_output_buffer(ctx);
+    size_t off = 0;
+    while (out && off < out->length) {
+        ssize_t n = write(sock, out->data + off, out->length - off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        off += (size_t)n;
     }
+    return telnetty_flush(ctx);
 }
 
-/* ============================================================================
- * Event Handlers
- * ============================================================================ */
+static void send_window_size(telnetty_context_t* ctx) {
+    struct winsize ws;
+    uint16_t cols = 80, rows = 24;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col && ws.ws_row) {
+        cols = ws.ws_col;
+        rows = ws.ws_row;
+    }
+    telnetty_send_window_size(ctx, cols, rows);
+}
 
-/**
- * Telnetty event handler
- */
-static void handle_telnetty_event(
-    telnetty_context_t* ctx,
-    telnetty_event_type_t event,
-    const telnetty_event_data_union_t* data,
-    void* user_data
-) {
-    (void)user_data;  /* Unused */
+static void on_telnet_event(telnetty_context_t* ctx, telnetty_event_type_t event,
+                            const telnetty_event_data_union_t* data, void* user_data) {
+    (void)user_data;
     switch (event) {
-        case TELNETTY_EVENT_DATA: {
-            /* Display received data */
-            const char* text = (const char*)data->data.data;
-            size_t length = data->data.length;
-            
-            /* Write to stdout */
-            write(STDOUT_FILENO, text, length);
-            fflush(stdout);
-            break;
+    case TELNETTY_EVENT_DATA:
+        fwrite(data->data.data, 1, data->data.length, stdout);
+        fflush(stdout);
+        break;
+    case TELNETTY_EVENT_DO:
+        /* We agreed to NAWS: report the size right away. */
+        if (data->option.option == TELNETTY_TELOPT_NAWS)
+            send_window_size(ctx);
+        break;
+    case TELNETTY_EVENT_SB:
+        /* IAC SB TTYPE SEND IAC SE -> IAC SB TTYPE IS <name> IAC SE */
+        if (data->sub.option == TELNETTY_TELOPT_TTYPE &&
+            data->sub.length >= 1 && data->sub.data[0] == 1) {
+            const char* term = getenv("TERM");
+            if (!term || !*term) term = "unknown";
+            uint8_t reply[64];
+            size_t n = strlen(term);
+            if (n > sizeof(reply) - 1) n = sizeof(reply) - 1;
+            reply[0] = 0;   /* IS */
+            memcpy(reply + 1, term, n);
+            telnetty_send_subnegotiation(ctx, TELNETTY_TELOPT_TTYPE, reply, n + 1);
         }
-        
-        case TELNETTY_EVENT_WILL: {
-            uint8_t option = data->option.option;
-            printf("\r\n[DEBUG] Server WILL option %d\r\n", option);
-            
-            /* Handle server WILL requests */
-            switch (option) {
-                case TELNETTY_TELOPT_ECHO:
-                    /* Server wants to echo - send DO */
-                    telnetty_send_option(ctx, TELNETTY_DO, option);
-                    client.echo_enabled = true;
-                    break;
-                    
-                case TELNETTY_TELOPT_SGA:
-                    /* Server wants to suppress go ahead - send DO */
-                    telnetty_send_option(ctx, TELNETTY_DO, option);
-                    break;
-                    
-                case TELNETTY_TELOPT_TTYPE:
-                    /* Server wants terminal type - send DO */
-                    telnetty_send_option(ctx, TELNETTY_DO, option);
-                    break;
-                    
-                case TELNETTY_TELOPT_NAWS:
-                    /* Server wants window size - send DO and our size */
-                    telnetty_send_option(ctx, TELNETTY_DO, option);
-                    telnetty_send_window_size(ctx, client.window_width, 
-                                          client.window_height);
-                    break;
-                    
-                default:
-                    /* For unknown options, send DONT */
-                    telnetty_send_option(ctx, TELNETTY_DONT, option);
-                    break;
-            }
-            break;
-        }
-        
-        case TELNETTY_EVENT_DO: {
-            uint8_t option = data->option.option;
-            printf("\r\n[DEBUG] Server DO option %d\r\n", option);
-            
-            /* Handle server DO requests */
-            switch (option) {
-                case TELNETTY_TELOPT_ECHO:
-                    /* Server wants us to echo - send WILL */
-                    telnetty_send_option(ctx, TELNETTY_WILL, option);
-                    /* Disable local echo */
-                    client.echo_enabled = false;
-                    break;
-                    
-                case TELNETTY_TELOPT_SGA:
-                    /* Server wants us to suppress go ahead - send WILL */
-                    telnetty_send_option(ctx, TELNETTY_WILL, option);
-                    break;
-                    
-                default:
-                    /* For unknown options, send WONT */
-                    telnetty_send_option(ctx, TELNETTY_WONT, option);
-                    break;
-            }
-            break;
-        }
-        
-        case TELNETTY_EVENT_SB: {
-            /* Handle subnegotiation */
-            uint8_t option = data->sub.option;
-            const uint8_t* sb_data = data->sub.data;
-            size_t sb_length = data->sub.length;
-            
-            printf("\r\n[DEBUG] Subnegotiation for option %d (%zu bytes)\r\n",
-                   option, sb_length);
-            
-            switch (option) {
-                case TELNETTY_TELOPT_TTYPE: {
-                    /* Terminal type request */
-                    if (sb_length > 1 && sb_data[0] == 1) { /* SEND */
-                        /* Send our terminal type */
-                        const char* term_type = getenv("TERM");
-                        if (!term_type) term_type = "xterm-256color";
-                        
-                        uint8_t response[64];
-                        response[0] = 0; /* IS */
-                        strcpy((char*)response + 1, term_type);
-                        telnetty_send_subnegotiation(ctx, option, 
-                            response, 1 + strlen(term_type));
-                    }
-                    break;
-                }
-                
-                case TELNETTY_TELOPT_NAWS: {
-                    /* Window size request - already sent */
-                    break;
-                }
-                
-                case TELNETTY_TELOPT_NEW_ENVIRON: {
-                    /* Environment variables */
-                    printf("\r\n[DEBUG] Environment negotiation\r\n");
-                    break;
-                }
-            }
-            break;
-        }
-        
-        case TELNETTY_EVENT_ERROR: {
-            printf("\r\n[ERROR] Telnetty error: %s\r\n", data->error.message);
-            break;
-        }
-        
-        case (telnetty_event_type_t)TELNETTY_EVENT_CONNECT: {
-            printf("\r\n[INFO] Connected to server\r\n");
-            client.connected = true;
-            
-            /* Declare what we accept before the server's offers arrive:
-             * the server may ECHO / SGA (him), we may send TTYPE / NAWS
-             * (us). Unsupported offers are refused by the core. */
-            telnetty_set_option_support(ctx, TELNETTY_TELOPT_ECHO, 0, 1);
-            telnetty_set_option_support(ctx, TELNETTY_TELOPT_SGA, 1, 1);
-            telnetty_set_option_support(ctx, TELNETTY_TELOPT_TTYPE, 1, 0);
-            telnetty_set_option_support(ctx, TELNETTY_TELOPT_NAWS, 1, 0);
-
-            /* Compression: inflate the server's MCCP2 stream and compress
-             * our input with MCCP3 when the server offers them. */
-            telnetty_accept_mccp2(ctx);
-            telnetty_accept_mccp3(ctx, 0);
-            
-            break;
-        }
-        
-        case (telnetty_event_type_t)TELNETTY_EVENT_DISCONNECT: {
-            printf("\r\n[INFO] Disconnected from server\r\n");
-            client.connected = false;
-            break;
-        }
-        
+        break;
+    case TELNETTY_EVENT_ERROR:
+        fprintf(stderr, "\n[telnet error %d: %s]\n", data->error.code,
+                data->error.message ? data->error.message : "");
+        break;
+    default:
+        break;
     }
 }
 
-/* ============================================================================
- * Connection Management
- * ============================================================================ */
-
-/**
- * Connect to Telnetty server
- */
-static int connect_to_server(const char* host, int port) {
-    /* Create socket */
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        perror("socket");
+static int connect_to(const char* host, const char* port) {
+    struct addrinfo hints, *res, *ai;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    int rc = getaddrinfo(host, port, &hints, &res);
+    if (rc != 0) {
+        fprintf(stderr, "%s: %s\n", host, gai_strerror(rc));
         return -1;
     }
-    
-    /* Resolve hostname */
-    struct hostent* host_info = gethostbyname(host);
-    if (!host_info) {
-        fprintf(stderr, "Unknown host: %s\n", host);
+    int fd = -1;
+    for (ai = res; ai; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) continue;
+        if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
         close(fd);
-        return -1;
+        fd = -1;
     }
-    
-    /* Set up server address */
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(port);
-    memcpy(&server_addr.sin_addr, host_info->h_addr_list[0], host_info->h_length);
-    
-    /* Connect to server */
-    printf("Connecting to %s:%d...\n", host, port);
-    if (connect(fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        perror("connect");
-        close(fd);
-        return -1;
-    }
-    
-    printf("Connected!\n");
-    
-    /* Set socket to non-blocking */
-    fcntl(fd, F_SETFL, O_NONBLOCK);
-    
+    freeaddrinfo(res);
     return fd;
 }
 
-/**
- * Disconnect from server
- */
-static void disconnect_from_server(void) {
-    if (client.fd >= 0) {
-        close(client.fd);
-        client.fd = -1;
+int main(int argc, char** argv) {
+    const char* host = argc > 1 ? argv[1] : "localhost";
+    const char* port = argc > 2 ? argv[2] : "4000";
+
+    sock = connect_to(host, port);
+    if (sock < 0) {
+        fprintf(stderr, "could not connect to %s:%s\n", host, port);
+        return 1;
     }
-    
-    client.connected = false;
-}
 
-/* ============================================================================
- * I/O Handling
- * ============================================================================ */
+    telnetty_context_t* ctx = telnetty_create(on_telnet_event, NULL);
+    if (!ctx) return 1;
 
-/**
- * Handle keyboard input
- */
-static void handle_keyboard_input(void) {
-    char buffer[MAX_LINE_LENGTH];
-    ssize_t bytes_read = read(STDIN_FILENO, buffer, sizeof(buffer));
-    
-    if (bytes_read > 0) {
-        /* Send to server */
-        if (client.connected) {
-            telnetty_send(client.telnetty_ctx, (uint8_t*)buffer, bytes_read);
+    /* What we accept, declared before the server's offers arrive. The
+     * server may ECHO and SGA; we may send TTYPE and NAWS. Anything else
+     * is refused by telnetty's RFC 1143 negotiation. */
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_ECHO, 0, 1);
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_SGA, 1, 1);
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_TTYPE, 1, 0);
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_NAWS, 1, 0);
+    telnetty_accept_mccp2(ctx);      /* return -1 when built without zlib */
+    telnetty_accept_mccp3(ctx, 0);
+
+    fprintf(stderr, "Connected to %s:%s. Ctrl+D to quit.\n", host, port);
+
+    int stdin_open = 1;
+    for (;;) {
+        struct pollfd fds[2] = {
+            { sock, POLLIN, 0 },
+            { STDIN_FILENO, POLLIN, 0 },
+        };
+        if (poll(fds, stdin_open ? 2 : 1, -1) < 0) {
+            if (errno == EINTR) continue;
+            perror("poll");
+            break;
         }
-        
-        /* Local echo if enabled */
-        if (client.echo_enabled) {
-            write(STDOUT_FILENO, buffer, bytes_read);
-        }
-    }
-}
 
-/**
- * Handle server data
- */
-static void handle_server_data(void) {
-    char buffer[BUFFER_SIZE];
-    ssize_t bytes_read = recv(client.fd, buffer, sizeof(buffer), 0);
-    
-    if (bytes_read > 0) {
-        /* Process Telnetty data */
-        int processed = telnetty_process(client.telnetty_ctx, 
-                                      (uint8_t*)buffer, 
-                                      bytes_read);
-        
-        if (processed < 0) {
-            fprintf(stderr, "Telnetty processing error\n");
-        }
-    } else if (bytes_read == 0) {
-        /* Server disconnected */
-        printf("\r\nServer disconnected\r\n");
-        client.connected = false;
-    } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
-        perror("recv");
-        client.connected = false;
-    }
-}
-
-/* ============================================================================
- * Main Functions
- * ============================================================================ */
-
-/**
- * Print usage information
- */
-static void print_usage(const char* program_name) {
-    printf("Usage: %s [host] [port]\n", program_name);
-    printf("\n");
-    printf("Connects to a Telnetty server and provides an interactive session.\n");
-    printf("\n");
-    printf("Arguments:\n");
-    printf("  host    Server hostname or IP address (default: localhost)\n");
-    printf("  port    Server port (default: 4000)\n");
-    printf("\n");
-    printf("Example:\n");
-    printf("  %s localhost 4000\n", program_name);
-    printf("  %s mud.example.com 23\n", program_name);
-}
-
-/**
- * Print client banner
- */
-static void print_banner(void) {
-    printf("\n");
-    printf("==============================================\n");
-    printf("Unified Telnetty Library Demo Client\n");
-    printf("==============================================\n");
-    printf("Features:\n");
-    printf("- Telnetty protocol compliance\n");
-    printf("- Option negotiation\n");
-    printf("- Color support\n");
-    printf("- Compression (MCCP2/MCCP3)\n");
-    printf("- MUD protocols (MSDP, GMCP)\n");
-    printf("==============================================\n");
-    printf("Press Ctrl+D to quit\n");
-    printf("==============================================\n\n");
-}
-
-/**
- * Main client loop
- */
-static void client_loop(void) {
-    fd_set read_fds;
-    struct timeval timeout;
-    int max_fd;
-    
-    while (client.connected) {
-        /* Set up file descriptor set */
-        FD_ZERO(&read_fds);
-        FD_SET(STDIN_FILENO, &read_fds);
-        FD_SET(client.fd, &read_fds);
-        max_fd = (STDIN_FILENO > client.fd) ? STDIN_FILENO : client.fd;
-        
-        /* Set timeout */
-        timeout.tv_sec = 0;
-        timeout.tv_usec = 100000; /* 100ms */
-        
-        /* Wait for input */
-        int activity = select(max_fd + 1, &read_fds, NULL, NULL, &timeout);
-        
-        if (activity < 0) {
-            if (errno != EINTR) {
-                perror("select");
+        if (fds[0].revents & (POLLIN | POLLHUP | POLLERR)) {
+            uint8_t buf[4096];
+            ssize_t n = read(sock, buf, sizeof(buf));
+            if (n <= 0) {
+                fprintf(stderr, "\nConnection closed.\n");
+                break;
             }
-            continue;
+            if (telnetty_process(ctx, buf, (size_t)n) < 0) {
+                fprintf(stderr, "\nProtocol error.\n");
+                break;
+            }
         }
-        
-        /* Check for keyboard input */
-        if (FD_ISSET(STDIN_FILENO, &read_fds)) {
-            handle_keyboard_input();
-        }
-        
-        /* Check for server data */
-        if (FD_ISSET(client.fd, &read_fds)) {
-            handle_server_data();
-        }
-    }
-}
 
-/**
- * Main function
- */
-int main(int argc, char* argv[]) {
-    const char* host = "localhost";
-    int port = 4000;
-    
-    /* Parse command line arguments */
-    if (argc > 1) {
-        if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) {
-            print_usage(argv[0]);
-            return 0;
+        if (stdin_open && (fds[1].revents & (POLLIN | POLLHUP))) {
+            char line[1024];
+            if (!fgets(line, sizeof(line), stdin)) {
+                /* End of input: finish our MCCP3 stream, then hang up. */
+                stdin_open = 0;
+                telnetty_compression_cleanup(ctx);
+                flush_output(ctx);
+                shutdown(sock, SHUT_WR);
+            } else {
+                size_t n = strcspn(line, "\r\n");
+                telnetty_send(ctx, (const uint8_t*)line, n);
+                telnetty_send(ctx, (const uint8_t*)"\r\n", 2);
+            }
         }
-        host = argv[1];
-    }
-    
-    if (argc > 2) {
-        port = atoi(argv[2]);
-        if (port <= 0 || port > 65535) {
-            fprintf(stderr, "Invalid port: %s\n", argv[2]);
-            return 1;
-        }
-    }
-    
-    /* Get terminal information */
-    get_window_size();
-    
-    /* Initialize client */
-    client.buffer_size = BUFFER_SIZE;
-    client.buffer = (char*)malloc(client.buffer_size);
-    if (!client.buffer) {
-        fprintf(stderr, "Failed to allocate buffer\n");
-        return 1;
-    }
-    
-    /* Create Telnetty context */
-    client.telnetty_ctx = telnetty_create(handle_telnetty_event, &client);
-    if (!client.telnetty_ctx) {
-        fprintf(stderr, "Failed to create Telnetty context\n");
-        free(client.buffer);
-        return 1;
-    }
-    
-    /* Initialize color support */
-    telnetty_color_init(client.telnetty_ctx, true);
-    
-    /* Set up terminal for raw mode */
-    set_raw_mode();
-    atexit(restore_terminal);
-    
-    /* Print banner */
-    print_banner();
-    printf("Connecting to %s:%d...\n", host, port);
-    
-    /* Connect to server */
-    client.fd = connect_to_server(host, port);
-    if (client.fd < 0) {
-        fprintf(stderr, "Failed to connect to server\n");
-        telnetty_destroy(client.telnetty_ctx);
-        free(client.buffer);
-        return 1;
-    }
-    
-    printf("Connected! Type 'quit' to exit.\n");
 
-    /* Runs the CONNECT handler (option support, MCCP accept) before any
-     * server bytes are parsed. */
-    telnetty_fire_connect_event(client.telnetty_ctx, host, port);
-    
-    /* Set up file descriptor for non-blocking I/O */
-    fcntl(client.fd, F_SETFL, O_NONBLOCK);
-    fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK);
-    
-    /* Main client loop */
-    client_loop();
-    
-    /* Cleanup */
-    disconnect_from_server();
-    telnetty_destroy(client.telnetty_ctx);
-    free(client.buffer);
-    
-    printf("\nDisconnected. Goodbye!\n");
-    
+        if (flush_output(ctx) < 0) {
+            perror("write");
+            break;
+        }
+    }
+
+    telnetty_destroy(ctx);
+    close(sock);
     return 0;
 }

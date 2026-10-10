@@ -6,8 +6,10 @@ protocol parser and option negotiation. Your application handles sockets,
 event loops, and deciding what to do with the data.
 
 The code is modular, but every module is optional only in the ordinary C
-sense: include the headers you use and define each module's implementation
-macro in exactly one C file.
+sense: include the headers you use and define the implementation macro for
+each module you call. The headers compile cleanly as C99, C11, and C17 with
+`-Wall -Wextra -Wpedantic -Werror` and no POSIX feature macros, and they can
+be included from C++11 or later.
 
 ## What it supports
 
@@ -25,11 +27,11 @@ CONTROL, NEW-ENVIRON, CHARSET, and END-OF-RECORD.
 | GMCP | JSON package messages | Payload JSON is the caller's responsibility |
 | MTTS | Terminal capability reporting | Includes the three-cycle TTYPE exchange |
 | MSSP | Server status values | |
-| MXP | Inline tag tokenization | Reports tags; does not render or sanitize them |
+| MXP | Inline tag tokenization | Reports tags; does not render or sanitize them; needs the events module |
 | ZMP | NUL-delimited commands and arguments | Subnegotiation payloads |
-| MSP | Inline sound and music triggers | Reports triggers to the application |
+| MSP | Inline sound and music triggers | Reports triggers; needs the events module |
 | ATCP | Package and message subnegotiation | Uses TELNET option 200 |
-| MCCP2 / MCCP3 | MUD compression | Requires zlib for compression support |
+| MCCP2 / MCCP3 | MUD compression, both directions | Server and client sides; requires zlib |
 | MCCP1 | Legacy option negotiation | Negotiation only; no built-in inflate path |
 | MCP 2.1 | In-band line messages | `#$#` framing; it is not a TELNET option |
 | MNES | Standard MUD environment variables | Sent through NEW-ENVIRON |
@@ -52,6 +54,11 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
+Besides the unit tests, the suite compiles every header on its own and
+together as strict C99 and as C++ with warnings as errors, and (when
+`python3` is available) runs the example servers over real sockets against a
+scripted MUD client that negotiates MCCP2 and MCCP3.
+
 Useful switches:
 
 | CMake option | Default | Effect |
@@ -59,15 +66,51 @@ Useful switches:
 | `BUILD_TESTS` | `OFF` | Build and register the test programs |
 | `BUILD_EXAMPLES` | `ON` | Build examples that have their dependencies |
 | `ENABLE_ZLIB` | `ON` | Look for zlib and enable its compression support when found |
-| `ENABLE_DEBUG` | `OFF` | Use debug build settings and memory tracking |
+| `ENABLE_DEBUG` | `OFF` | Define `TELNETTY_DEBUG_MEMORY` (debug tracing) in tests and examples |
+| `BUILD_DOCS` | `OFF` | Add a `doc` target that runs Doxygen over the headers |
 | `BUILD_SUSPENDERS_EXAMPLE` | `OFF` | Build `server_suspenders` (also set both dependency include paths) |
 
 To build without zlib, configure with `-DENABLE_ZLIB=OFF`. The library still
-builds; compression calls that require zlib will not be available. CMake also
-exports an interface target named `telnetty::telnetty` for downstream use.
+builds; the MCCP enable/accept calls return `-1`.
 
-The examples live in `examples/`. `server_simple` and `client_simple` are the
-small socket examples. `server_libuv` is built only when libuv is installed.
+### Use it from CMake
+
+The `telnetty::telnetty` target carries the include path and, when zlib was
+found, the `TELNETTY_HAVE_ZLIB` definition and the zlib link. Any of these
+work:
+
+```cmake
+# Installed copy (cmake --install build --prefix ...)
+find_package(telnetty 1.2 REQUIRED)
+
+# Vendored checkout
+add_subdirectory(third_party/telnetty.h)
+
+# Fetched at configure time
+include(FetchContent)
+FetchContent_Declare(telnetty
+    GIT_REPOSITORY https://github.com/StraylightRunMOO/telnetty.h.git
+    GIT_TAG v1.2.0)
+FetchContent_MakeAvailable(telnetty)
+
+target_link_libraries(my_mud PRIVATE telnetty::telnetty)
+```
+
+Examples are only built when Telnetty is the top-level project. Without
+CMake, add `include/` to your include path and, for compression, define
+`TELNETTY_HAVE_ZLIB` and link `-lz`.
+
+### Examples
+
+The examples live in `examples/`. Each is one file you can read top to
+bottom:
+
+| Program | What it shows |
+| --- | --- |
+| `server_simple [port]` | `poll()` chat server: line input, NAWS/TTYPE, MCCP2/MCCP3, color, partial writes, timeouts |
+| `client_simple [host] [port]` | Line-mode client: answers TTYPE/NAWS, accepts MCCP2/MCCP3 |
+| `server_libuv [port]` | Echo server on a libuv loop; built only when libuv is installed |
+| `server_suspenders` | Optional C11 coroutine server (see below) |
 `server_suspenders` is an optional C11 echo server using
 [Suspenders](https://github.com/StraylightRunMOO/suspenders.h) and
 [Memento](https://github.com/StraylightRunMOO/memento); it is useful when you
@@ -91,9 +134,7 @@ replace your deployment's socket lifecycle or error handling.
 
 ## Use it in a C program
 
-Choose the modules you need. This example includes the common set. Put the
-implementation defines in one source file only; defining them in every file
-is a reliable way to meet the linker twice.
+Choose the modules you need. This example includes the common set.
 
 ```c
 #define TELNETTY_IMPLEMENTATION
@@ -116,7 +157,17 @@ is a reliable way to meet the linker twice.
 ```
 
 The implementation macros must appear before the includes. If you do not use
-a module, leave out its macro and header. The headers are under `include/`.
+a module, leave out its macro and header. Module dependencies: everything
+needs the core; the MSP and MXP parts of `telnetty_mud.h` also need
+`TELNETTY_EVENTS_IMPLEMENTATION` (their enable calls return `-1` without
+it).
+
+Every function is `static`, so each translation unit that calls Telnetty
+defines the implementation macros it needs and gets its own private copy;
+two such files link together without conflicts. Most programs keep all
+TELNET handling in one file and expose their own small API to the rest.
+A file that includes the headers *without* the macros sees only the types
+and constants, which is handy for passing `telnetty_context_t*` around.
 
 Create one context per connection, pass received bytes to
 `telnetty_process()`, and write queued output to your socket:
@@ -140,8 +191,11 @@ if (!ctx) {
     /* Handle allocation failure. */
 }
 
+telnetty_tick(ctx, monotonic_ms());          /* start the clock first */
+telnetty_set_negotiation_timeout(ctx, 5000);
 telnetty_enable_echo(ctx);
 telnetty_enable_naws(ctx);
+telnetty_compression_auto_negotiate(ctx, true);   /* offer MCCP2 + MCCP3 */
 telnetty_color_init(ctx, true);
 
 /* For each socket read: */
@@ -188,13 +242,36 @@ the network. Validate values in your callbacks. In particular, MXP callbacks
 report markup; they do not decide which tags are safe to execute or render.
 GMCP gives your application JSON text, not a JSON parser.
 
-### Compression and TLS have boundaries
+### Compression
 
-Link zlib when enabling the compression module. MCCP1 currently negotiates
-the legacy option but does not inflate its stream. The StartTLS helpers only
-signal `FOLLOWS`; your application must switch to a TLS implementation and
-manage the socket transition. Telnetty does not provide TLS or WebSocket
-framing.
+Compression is transparent once negotiated:
+
+- **Server:** `telnetty_compression_auto_negotiate()` (or
+  `telnetty_enable_mccp2` / `telnetty_enable_mccp3`) offers both. MCCP2
+  output is compressed inside `telnetty_send()` and every other helper.
+  MCCP3 input is inflated inside `telnetty_process()`, including bytes that
+  arrive in the same read as the client's start marker.
+- **Client:** `telnetty_accept_mccp2()` and `telnetty_accept_mccp3()` accept
+  the server's offers; inflating and compressing happen in the same places.
+- **Closing:** call `telnetty_compression_cleanup()` before your last flush.
+  It ends outbound streams with `Z_FINISH` so the peer sees a clean end of
+  stream.
+- **Errors:** a corrupt inbound stream fires `EVENT_ERROR` with
+  `TELNETTY_ERR_COMPRESSION`, and `telnetty_process()` returns `-1`.
+  Garbage is never delivered as text.
+
+Write output only through Telnetty (`telnetty_send` and friends). A byte
+appended to the output buffer directly, after MCCP2 starts, corrupts the
+client's stream. Define `TELNETTY_DEBUG_OUT_HOOK` in a debug build to abort
+at the next write if that happens.
+
+MCCP1 negotiates the legacy option but does not inflate its stream.
+
+### TLS has a boundary
+
+The StartTLS helpers only signal `FOLLOWS`; your application must switch to a
+TLS implementation and manage the socket transition. Telnetty does not
+provide TLS or WebSocket framing.
 
 ## Where to look next
 
@@ -207,7 +284,6 @@ framing.
 - `include/telnetty_color.h` — terminal colors and OSC helpers
 - `include/telnetty_mcp.h` — MCP 2.1 in-band messages
 - `CHANGELOG.md` — release history and API changes
-- `PLAN.md` — remaining protocol and release work
 
 The public declarations and comments in each header are the most complete API
 reference. The examples show how the pieces fit together without requiring a

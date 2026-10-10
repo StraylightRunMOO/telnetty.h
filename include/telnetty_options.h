@@ -21,7 +21,7 @@
  * - Charset (RFC 2066)
  * 
  * @author Damus <damus@straylightrun.org>
- * @version 1.0.0
+ * @version 1.2.0
  * 
  */
 
@@ -88,6 +88,7 @@ typedef struct {
  * Binary Transmission Option (RFC 856)
  * ============================================================================ */
 
+#ifdef TELNETTY_OPTIONS_IMPLEMENTATION
 /**
  * Binary transmission option handler
  * 
@@ -96,7 +97,7 @@ typedef struct {
  * @param command Command received
  * @param user_data User data
  */
-static void telnetty_binary_handler(
+static TELNETTY_UNUSED void telnetty_binary_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -131,7 +132,7 @@ static TELNETTY_UNUSED int telnetty_disable_binary(telnetty_context_t* ctx);
  * @param command Command received
  * @param user_data User data
  */
-static void telnetty_echo_handler(
+static TELNETTY_UNUSED void telnetty_echo_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -174,7 +175,7 @@ static TELNETTY_UNUSED bool telnetty_is_echo_enabled(telnetty_context_t* ctx);
  * @param command Command received
  * @param user_data User data
  */
-static void telnetty_sga_handler(
+static TELNETTY_UNUSED void telnetty_sga_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -196,6 +197,7 @@ static TELNETTY_UNUSED int telnetty_enable_sga(telnetty_context_t* ctx);
  * @return 0 on success, -1 on failure
  */
 static TELNETTY_UNUSED int telnetty_disable_sga(telnetty_context_t* ctx);
+#endif /* TELNETTY_OPTIONS_IMPLEMENTATION */
 
 /* ============================================================================
  * Terminal Type Option (RFC 1091)
@@ -208,6 +210,7 @@ typedef struct {
     bool query_sent;                    /**< Query has been sent */
 } telnetty_terminal_type_data_t;
 
+#ifdef TELNETTY_OPTIONS_IMPLEMENTATION
 /**
  * Terminal type option handler
  * 
@@ -216,7 +219,7 @@ typedef struct {
  * @param command Command received
  * @param user_data User data (should be telnetty_terminal_type_data_t*)
  */
-static void telnetty_ttype_handler(
+static TELNETTY_UNUSED void telnetty_ttype_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -247,6 +250,7 @@ static TELNETTY_UNUSED int telnetty_query_terminal_type(telnetty_context_t* ctx)
  * @return Terminal type string or NULL if not negotiated
  */
 static TELNETTY_UNUSED const char* telnetty_get_terminal_type(telnetty_context_t* ctx);
+#endif /* TELNETTY_OPTIONS_IMPLEMENTATION */
 
 /* ============================================================================
  * Window Size Option (RFC 1073 - NAWS)
@@ -259,6 +263,7 @@ typedef struct {
     bool size_received;                 /**< Size has been received */
 } telnetty_window_size_data_t;
 
+#ifdef TELNETTY_OPTIONS_IMPLEMENTATION
 /**
  * Window size option handler
  * 
@@ -267,7 +272,7 @@ typedef struct {
  * @param command Command received
  * @param user_data User data (should be telnetty_window_size_data_t*)
  */
-static void telnetty_naws_handler(
+static TELNETTY_UNUSED void telnetty_naws_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -290,7 +295,7 @@ static TELNETTY_UNUSED int telnetty_enable_naws(telnetty_context_t* ctx);
  * @param height Output height (optional)
  * @return 0 if size is available, -1 otherwise
  */
-static int telnetty_get_window_size(
+static TELNETTY_UNUSED int telnetty_get_window_size(
     telnetty_context_t* ctx,
     uint16_t* width,
     uint16_t* height
@@ -304,11 +309,12 @@ static int telnetty_get_window_size(
  * @param height Window height
  * @return 0 on success, -1 on failure
  */
-static int telnetty_send_window_size(
+static TELNETTY_UNUSED int telnetty_send_window_size(
     telnetty_context_t* ctx,
     uint16_t width,
     uint16_t height
 );
+#endif /* TELNETTY_OPTIONS_IMPLEMENTATION */
 
 /* ============================================================================
  * Environment Variables Option (RFC 1572 - NEW-ENVIRON)
@@ -336,6 +342,7 @@ typedef struct {
     bool info_sent;                     /**< INFO has been sent */
 } telnetty_environ_data_t;
 
+#ifdef TELNETTY_OPTIONS_IMPLEMENTATION
 /**
  * Environment option handler
  * 
@@ -344,7 +351,7 @@ typedef struct {
  * @param command Command received
  * @param user_data User data (should be telnetty_environ_data_t*)
  */
-static void telnetty_environ_handler(
+static TELNETTY_UNUSED void telnetty_environ_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -378,7 +385,7 @@ static TELNETTY_UNUSED int telnetty_request_environ(telnetty_context_t* ctx);
  * @param count Number of variables
  * @return 0 on success, -1 on failure
  */
-static int telnetty_send_environ(
+static TELNETTY_UNUSED int telnetty_send_environ(
     telnetty_context_t* ctx,
     const char* const* vars,
     const char* const* values,
@@ -394,10 +401,11 @@ static int telnetty_send_environ(
  * @param name Variable name
  * @return Variable value or NULL if not received
  */
-static const char* telnetty_get_environ(
+static TELNETTY_UNUSED const char* telnetty_get_environ(
     telnetty_context_t* ctx,
     const char* name
 );
+#endif /* TELNETTY_OPTIONS_IMPLEMENTATION */
 
 /* MNES (MUD NEW-ENVIRON Standard) — well-known variable names carried
  * over the existing RFC 1572 NEW-ENVIRON option (TELNETTY_TELOPT_NEW_ENVIRON).
@@ -415,6 +423,7 @@ static const char* telnetty_get_environ(
 #define TELNETTY_MNES_IPADDRESS        "IPADDRESS"
 #define TELNETTY_MNES_UTF_8            "UTF-8"
 
+#ifdef TELNETTY_OPTIONS_IMPLEMENTATION
 /**
  * Convenience wrapper that pushes the six most-often-requested MNES
  * variables into NEW-ENVIRON in one call. Any parameter may be NULL to
@@ -430,6 +439,7 @@ static TELNETTY_UNUSED int telnetty_send_mnes(
     uint32_t    mtts,
     int         screen_reader
 );
+#endif /* TELNETTY_OPTIONS_IMPLEMENTATION */
 
 /* ============================================================================
  * Charset Option (RFC 2066)
@@ -453,6 +463,7 @@ typedef struct {
     bool request_sent;                  /**< SB REQUEST already sent once */
 } telnetty_charset_data_t;
 
+#ifdef TELNETTY_OPTIONS_IMPLEMENTATION
 /**
  * Charset option handler
  * 
@@ -461,7 +472,7 @@ typedef struct {
  * @param command Command received
  * @param user_data User data (should be telnetty_charset_data_t*)
  */
-static void telnetty_charset_handler(
+static TELNETTY_UNUSED void telnetty_charset_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -476,7 +487,7 @@ static void telnetty_charset_handler(
  * @param count Number of charsets
  * @return 0 on success, -1 on failure
  */
-static int telnetty_enable_charset(
+static TELNETTY_UNUSED int telnetty_enable_charset(
     telnetty_context_t* ctx,
     const char* const* charsets,
     size_t count
@@ -549,11 +560,12 @@ static TELNETTY_UNUSED bool telnetty_is_option_enabled(telnetty_context_t* ctx, 
  * @param timeout_ms Timeout in milliseconds
  * @return 0 if negotiation complete, -1 on timeout or error
  */
-static int telnetty_wait_for_option(
+static TELNETTY_UNUSED int telnetty_wait_for_option(
     telnetty_context_t* ctx,
     uint8_t option,
     int timeout_ms
 );
+#endif /* TELNETTY_OPTIONS_IMPLEMENTATION */
 
 /* ============================================================================
  * Implementation
@@ -580,13 +592,13 @@ static int telnetty_wait_for_option(
 #endif
 
 /* Forward declarations for internal functions */
-static telnetty_option_tracker_t* telnetty_option_tracker_create(
+static TELNETTY_UNUSED telnetty_option_tracker_t* telnetty_option_tracker_create(
     uint8_t option,
     telnetty_option_handler_t handler,
     void* user_data
 );
 static TELNETTY_UNUSED void telnetty_option_tracker_destroy(telnetty_option_tracker_t* tracker);
-static int telnetty_option_send_negotiation(
+static TELNETTY_UNUSED int telnetty_option_send_negotiation(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command
@@ -596,7 +608,7 @@ static int telnetty_option_send_negotiation(
  * Binary Transmission Implementation
  * ============================================================================ */
 
-static void telnetty_binary_handler(
+static TELNETTY_UNUSED void telnetty_binary_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -624,7 +636,7 @@ static TELNETTY_UNUSED int telnetty_disable_binary(telnetty_context_t* ctx) {
  * Echo Implementation
  * ============================================================================ */
 
-static void telnetty_echo_handler(
+static TELNETTY_UNUSED void telnetty_echo_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -658,7 +670,7 @@ static TELNETTY_UNUSED bool telnetty_is_echo_enabled(telnetty_context_t* ctx) {
  * Suppress Go Ahead Implementation
  * ============================================================================ */
 
-static void telnetty_sga_handler(
+static TELNETTY_UNUSED void telnetty_sga_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -692,7 +704,7 @@ static TELNETTY_UNUSED int telnetty_disable_sga(telnetty_context_t* ctx) {
 
 static TELNETTY_UNUSED int telnetty_query_terminal_type(telnetty_context_t* ctx);
 
-static void telnetty_ttype_handler(
+static TELNETTY_UNUSED void telnetty_ttype_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -709,7 +721,7 @@ static void telnetty_ttype_handler(
 
 /* IAC SB TTYPE IS <name> IAC SE: keep the latest name, truncated to
  * max_length. Repeated SENDs (MTTS cycling) overwrite it in turn. */
-static void telnetty_ttype_sb_handler(
+static TELNETTY_UNUSED void telnetty_ttype_sb_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     const uint8_t* data,
@@ -729,7 +741,7 @@ static void telnetty_ttype_sb_handler(
     td->terminal_type = name;
 }
 
-static void telnetty_ttype_data_free(void* p) {
+static TELNETTY_UNUSED void telnetty_ttype_data_free(void* p) {
     telnetty_terminal_type_data_t* td = (telnetty_terminal_type_data_t*)p;
     if (!td) return;
     TELNETTY_OPTIONS_FREE(td->terminal_type);
@@ -774,7 +786,7 @@ static TELNETTY_UNUSED const char* telnetty_get_terminal_type(telnetty_context_t
  * Window Size Implementation
  * ============================================================================ */
 
-static void telnetty_naws_handler(
+static TELNETTY_UNUSED void telnetty_naws_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -788,7 +800,7 @@ static void telnetty_naws_handler(
 
 /* IAC SB NAWS <w16> <h16> IAC SE. The core parser has already collapsed
  * doubled IACs, so a 255 byte in either value arrives as one byte. */
-static void telnetty_naws_sb_handler(
+static TELNETTY_UNUSED void telnetty_naws_sb_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     const uint8_t* data,
@@ -807,7 +819,7 @@ static void telnetty_naws_sb_handler(
     wd->size_received = true;
 }
 
-static void telnetty_naws_data_free(void* p) {
+static TELNETTY_UNUSED void telnetty_naws_data_free(void* p) {
     TELNETTY_OPTIONS_FREE(p);
 }
 
@@ -825,7 +837,7 @@ static TELNETTY_UNUSED int telnetty_enable_naws(telnetty_context_t* ctx) {
     return telnetty_send_option(ctx, TELNETTY_DO, TELNETTY_TELOPT_NAWS);
 }
 
-static int telnetty_get_window_size(
+static TELNETTY_UNUSED int telnetty_get_window_size(
     telnetty_context_t* ctx,
     uint16_t* width,
     uint16_t* height
@@ -840,7 +852,7 @@ static int telnetty_get_window_size(
     return 0;
 }
 
-static int telnetty_send_window_size(
+static TELNETTY_UNUSED int telnetty_send_window_size(
     telnetty_context_t* ctx,
     uint16_t width,
     uint16_t height
@@ -861,7 +873,7 @@ static int telnetty_send_window_size(
  * Environment Variables Implementation
  * ============================================================================ */
 
-static void telnetty_environ_handler(
+static TELNETTY_UNUSED void telnetty_environ_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -875,7 +887,7 @@ static void telnetty_environ_handler(
      * application (telnetty_send_environ / telnetty_send_mnes). */
 }
 
-static void telnetty_environ_data_free(void* p) {
+static TELNETTY_UNUSED void telnetty_environ_data_free(void* p) {
     telnetty_environ_data_t* ed = (telnetty_environ_data_t*)p;
     if (!ed) return;
     for (size_t i = 0; i < ed->count; i++) {
@@ -888,7 +900,7 @@ static void telnetty_environ_data_free(void* p) {
 }
 
 /* Insert or replace name=value. Takes ownership of both strings. */
-static int telnetty__environ_store(telnetty_environ_data_t* ed, char* name, char* value) {
+static TELNETTY_UNUSED int telnetty__environ_store(telnetty_environ_data_t* ed, char* name, char* value) {
     for (size_t i = 0; i < ed->count; i++) {
         if (strcmp(ed->variables[i], name) == 0) {
             TELNETTY_OPTIONS_FREE(name);
@@ -920,7 +932,7 @@ fail:
 /* Copy one escaped NEW-ENVIRON field starting at data[*pos], stopping at
  * the next unescaped VAR/VALUE/USERVAR marker. Returns a NUL-terminated
  * heap string. */
-static char* telnetty__environ_field(const uint8_t* data, size_t length, size_t* pos) {
+static TELNETTY_UNUSED char* telnetty__environ_field(const uint8_t* data, size_t length, size_t* pos) {
     char* out = (char*)TELNETTY_OPTIONS_MALLOC(length - *pos + 1);
     if (!out) return NULL;
     size_t n = 0;
@@ -941,7 +953,7 @@ static char* telnetty__environ_field(const uint8_t* data, size_t length, size_t*
 }
 
 /* IAC SB NEW-ENVIRON IS|INFO [VAR|USERVAR name [VALUE value]]* IAC SE */
-static void telnetty_environ_sb_handler(
+static TELNETTY_UNUSED void telnetty_environ_sb_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     const uint8_t* data,
@@ -1005,7 +1017,7 @@ static TELNETTY_UNUSED int telnetty_request_environ(telnetty_context_t* ctx) {
     return telnetty_send_subnegotiation(ctx, TELNETTY_TELOPT_NEW_ENVIRON, request_data, 1);
 }
 
-static int telnetty__send_environ_cmd(
+static TELNETTY_UNUSED int telnetty__send_environ_cmd(
     telnetty_context_t* ctx,
     uint8_t command,
     const char* const* vars,
@@ -1068,7 +1080,7 @@ static int telnetty__send_environ_cmd(
     return result;
 }
 
-static int telnetty_send_environ(
+static TELNETTY_UNUSED int telnetty_send_environ(
     telnetty_context_t* ctx,
     const char* const* vars,
     const char* const* values,
@@ -1087,7 +1099,7 @@ static TELNETTY_UNUSED int telnetty_send_environ_info(
     return telnetty__send_environ_cmd(ctx, TELNETTY_ENV_INFO, vars, values, count);
 }
 
-static const char* telnetty_get_environ(
+static TELNETTY_UNUSED const char* telnetty_get_environ(
     telnetty_context_t* ctx,
     const char* name
 ) {
@@ -1142,7 +1154,7 @@ static TELNETTY_UNUSED int telnetty_send_mnes(
  * ============================================================================ */
 
 /* Forward: SB handler */
-static void telnetty_charset_sb_handler(
+static TELNETTY_UNUSED void telnetty_charset_sb_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     const uint8_t* data,
@@ -1174,7 +1186,7 @@ static TELNETTY_UNUSED void telnetty_charset_send_request(
         cd->request_sent = true;
 }
 
-static void telnetty_charset_handler(
+static TELNETTY_UNUSED void telnetty_charset_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -1190,7 +1202,7 @@ static void telnetty_charset_handler(
     }
 }
 
-static void telnetty_charset_sb_handler(
+static TELNETTY_UNUSED void telnetty_charset_sb_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     const uint8_t* data,
@@ -1269,7 +1281,7 @@ static void telnetty_charset_sb_handler(
     }
 }
 
-static void telnetty_charset_data_free(void* p) {
+static TELNETTY_UNUSED void telnetty_charset_data_free(void* p) {
     telnetty_charset_data_t* cd = (telnetty_charset_data_t*)p;
     if (!cd) return;
     if (cd->supported_charsets) {
@@ -1281,7 +1293,7 @@ static void telnetty_charset_data_free(void* p) {
     TELNETTY_OPTIONS_FREE(cd);
 }
 
-static int telnetty_enable_charset(
+static TELNETTY_UNUSED int telnetty_enable_charset(
     telnetty_context_t* ctx,
     const char* const* charsets,
     size_t count
@@ -1403,11 +1415,11 @@ typedef struct {
     int slc_updates;   /* Number of SLC triples applied since enable */
 } telnetty_linemode_data_t;
 
-static void telnetty_tspeed_free(void* p) { TELNETTY_OPTIONS_FREE(p); }
-static void telnetty_lflow_free(void* p) { TELNETTY_OPTIONS_FREE(p); }
-static void telnetty_linemode_free(void* p) { TELNETTY_OPTIONS_FREE(p); }
+static TELNETTY_UNUSED void telnetty_tspeed_free(void* p) { TELNETTY_OPTIONS_FREE(p); }
+static TELNETTY_UNUSED void telnetty_lflow_free(void* p) { TELNETTY_OPTIONS_FREE(p); }
+static TELNETTY_UNUSED void telnetty_linemode_free(void* p) { TELNETTY_OPTIONS_FREE(p); }
 
-static void telnetty_status_sb(
+static TELNETTY_UNUSED void telnetty_status_sb(
     telnetty_context_t* ctx, uint8_t option,
     const uint8_t* data, size_t length, void* user_data
 ) {
@@ -1450,7 +1462,7 @@ static TELNETTY_UNUSED int telnetty_enable_timing_mark(telnetty_context_t* ctx) 
     return 0;
 }
 
-static void telnetty_tspeed_sb(
+static TELNETTY_UNUSED void telnetty_tspeed_sb(
     telnetty_context_t* ctx, uint8_t option,
     const uint8_t* data, size_t length, void* user_data
 ) {
@@ -1459,7 +1471,7 @@ static void telnetty_tspeed_sb(
     if (!td || length < 2 || data[0] != TELNETTY_TSPEED_IS) return;
     const char* s = (const char*)(data + 1);
     size_t n = length - 1;
-    const char* comma = memchr(s, ',', n);
+    const char* comma = (const char*)memchr(s, ',', n);
     size_t tx_n = comma ? (size_t)(comma - s) : n;
     size_t rx_n = comma ? n - tx_n - 1 : 0;
     if (tx_n >= sizeof(td->tx)) tx_n = sizeof(td->tx) - 1;
@@ -1496,7 +1508,7 @@ static TELNETTY_UNUSED int telnetty_get_term_speed(telnetty_context_t* ctx, cons
     return 0;
 }
 
-static void telnetty_lflow_sb(
+static TELNETTY_UNUSED void telnetty_lflow_sb(
     telnetty_context_t* ctx, uint8_t option,
     const uint8_t* data, size_t length, void* user_data
 ) {
@@ -1527,7 +1539,7 @@ static TELNETTY_UNUSED int telnetty_get_flow(telnetty_context_t* ctx) {
 /* Reply to a LINEMODE MODE offer with the mode byte plus MODE_ACK, so
  * the peer knows we honored its edit/trapsig choices. Idempotent: if the
  * peer already set the ACK bit it's re-asserting, and we still echo. */
-static void telnetty__linemode_send_mode_ack(telnetty_context_t* ctx, uint8_t mode) {
+static TELNETTY_UNUSED void telnetty__linemode_send_mode_ack(telnetty_context_t* ctx, uint8_t mode) {
     uint8_t reply[2];
     reply[0] = TELNETTY_LM_MODE;
     reply[1] = (uint8_t)(mode | TELNETTY_LM_MODE_ACK);
@@ -1537,7 +1549,7 @@ static void telnetty__linemode_send_mode_ack(telnetty_context_t* ctx, uint8_t mo
 /* Reply to an SLC frame by echoing every triple back with the ACK bit set
  * (RFC 1184 §5.5). Called from the SB handler after we've stored the
  * peer's triples in slc_table. */
-static void telnetty__linemode_send_slc_ack(
+static TELNETTY_UNUSED void telnetty__linemode_send_slc_ack(
     telnetty_context_t* ctx,
     const uint8_t* triples, size_t triple_count
 ) {
@@ -1556,7 +1568,7 @@ static void telnetty__linemode_send_slc_ack(
     telnetty_send_subnegotiation(ctx, TELNETTY_TELOPT_LINEMODE, buf, off);
 }
 
-static void telnetty_linemode_sb(
+static TELNETTY_UNUSED void telnetty_linemode_sb(
     telnetty_context_t* ctx, uint8_t option,
     const uint8_t* data, size_t length, void* user_data
 ) {
@@ -1711,7 +1723,7 @@ static TELNETTY_UNUSED int telnetty_send_eor(telnetty_context_t* ctx) {
 #define TELNETTY_STARTTLS_FOLLOWS  1
 
 
-static void telnetty__starttls_sb(
+static TELNETTY_UNUSED void telnetty__starttls_sb(
     telnetty_context_t* ctx, uint8_t option,
     const uint8_t* data, size_t length, void* user_data
 ) {
@@ -1729,7 +1741,7 @@ static void telnetty__starttls_sb(
         (telnetty_event_type_t)TELNETTY_STARTTLS_EVENT_ID, &u);
 }
 
-static void telnetty__starttls_handler(
+static TELNETTY_UNUSED void telnetty__starttls_handler(
     telnetty_context_t* ctx, uint8_t option, uint8_t command, void* user_data
 ) {
     (void)ctx; (void)option; (void)command; (void)user_data;
@@ -1801,7 +1813,7 @@ static TELNETTY_UNUSED int telnetty_disable_all_options(telnetty_context_t* ctx)
 
 /* Note: telnetty_is_option_enabled and telnetty_get_option_state are defined in telnetty_core.h */
 
-static int telnetty_wait_for_option(
+static TELNETTY_UNUSED int telnetty_wait_for_option(
     telnetty_context_t* ctx,
     uint8_t option,
     int timeout_ms
@@ -1819,7 +1831,7 @@ static int telnetty_wait_for_option(
  * Internal Helper Functions
  * ============================================================================ */
 
-static telnetty_option_tracker_t* telnetty_option_tracker_create(
+static TELNETTY_UNUSED telnetty_option_tracker_t* telnetty_option_tracker_create(
     uint8_t option,
     telnetty_option_handler_t handler,
     void* user_data
@@ -1851,7 +1863,7 @@ static TELNETTY_UNUSED void telnetty_option_tracker_destroy(telnetty_option_trac
     TELNETTY_OPTIONS_FREE(tracker);
 }
 
-static int telnetty_option_send_negotiation(
+static TELNETTY_UNUSED int telnetty_option_send_negotiation(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command

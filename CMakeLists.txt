@@ -1,48 +1,36 @@
 cmake_minimum_required(VERSION 3.10)
-project(Telnetty VERSION 1.1.0 LANGUAGES C)
 
-# Set C standard
-set(CMAKE_C_STANDARD 99)
-set(CMAKE_C_STANDARD_REQUIRED ON)
-# strdup / strndup
-add_compile_definitions(_POSIX_C_SOURCE=200809L)
+# The version lives in telnetty_core.h; read it so the two never drift.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/telnetty_core.h" _telnetty_version_line
+     REGEX "^#define TELNETTY_VERSION_STRING \"[0-9]+\\.[0-9]+\\.[0-9]+\"")
+string(REGEX MATCH "[0-9]+\\.[0-9]+\\.[0-9]+" _telnetty_version "${_telnetty_version_line}")
+
+project(Telnetty VERSION ${_telnetty_version} LANGUAGES C)
+
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
+# Building this project directly (not via add_subdirectory)?
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(TELNETTY_IS_TOP_LEVEL ON)
+else()
+    set(TELNETTY_IS_TOP_LEVEL OFF)
+endif()
 
 # Options
-option(BUILD_EXAMPLES "Build example programs" ON)
+option(BUILD_EXAMPLES "Build example programs" ${TELNETTY_IS_TOP_LEVEL})
 option(BUILD_TESTS "Build test programs" OFF)
+option(BUILD_DOCS "Build Doxygen API documentation (needs doxygen)" OFF)
 option(ENABLE_ZLIB "Enable zlib compression support" ON)
-option(ENABLE_DEBUG "Enable debug output" OFF)
+option(ENABLE_DEBUG "Enable debug output and memory tracing" OFF)
 option(BUILD_SUSPENDERS_EXAMPLE "Build the optional Memento/Suspenders server example" OFF)
 set(MEMENTO_INCLUDE_DIR "" CACHE PATH "Directory containing memento.h")
 set(SUSPENDERS_INCLUDE_DIR "" CACHE PATH "Directory containing suspenders.h")
 
-# Find packages
-set(TELNETTY_ZLIB_FOUND OFF)
-if(ENABLE_ZLIB)
-    find_package(ZLIB)
-    if(ZLIB_FOUND)
-        set(TELNETTY_ZLIB_FOUND ON)
-        add_definitions(-DTELNETTY_HAVE_ZLIB)
-        include_directories(${ZLIB_INCLUDE_DIRS})
-    endif()
+if(TELNETTY_IS_TOP_LEVEL AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# Compiler flags
-if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID MATCHES "Clang")
-    add_compile_options(-Wall -Wextra -Wpedantic)
-    # Suppress unused-function warnings for header-only library (expected behavior)
-    add_compile_options(-Wno-unused-function)
-    if(ENABLE_DEBUG)
-        add_compile_options(-g -O0 -DTELNETTY_DEBUG_MEMORY)
-    else()
-        add_compile_options(-O3 -DNDEBUG)
-    endif()
-endif()
-
-# Include directories
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-# Library headers (headers-only implementation)
 set(TELNETTY_HEADERS
     include/telnetty_core.h
     include/telnetty_events.h
@@ -54,68 +42,97 @@ set(TELNETTY_HEADERS
     include/telnetty_color.h
 )
 
-# Create an interface library for the headers
-add_library(telnetty INTERFACE)
-target_include_directories(telnetty INTERFACE 
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include/telnetty>
-)
+# ---------------------------------------------------------------------------
+# Library: header-only interface target
+# ---------------------------------------------------------------------------
 
-if(TELNETTY_ZLIB_FOUND)
-    target_link_libraries(telnetty INTERFACE ${ZLIB_LIBRARIES})
+add_library(telnetty INTERFACE)
+add_library(telnetty::telnetty ALIAS telnetty)
+target_include_directories(telnetty INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/telnetty>
+)
+if(NOT CMAKE_VERSION VERSION_LESS 3.8)
+    target_compile_features(telnetty INTERFACE c_std_99)
 endif()
 
-# Installation
-install(FILES ${TELNETTY_HEADERS}
-    DESTINATION include/telnetty
-)
+set(TELNETTY_WITH_ZLIB OFF)
+if(ENABLE_ZLIB)
+    find_package(ZLIB)
+    if(ZLIB_FOUND)
+        set(TELNETTY_WITH_ZLIB ON)
+        # Consumers need the define too, or compression silently compiles
+        # out of their translation units.
+        target_compile_definitions(telnetty INTERFACE TELNETTY_HAVE_ZLIB)
+        target_link_libraries(telnetty INTERFACE ZLIB::ZLIB)
+    endif()
+endif()
 
-install(TARGETS telnetty
-    EXPORT telnetty-targets
-    ARCHIVE DESTINATION lib
-    LIBRARY DESTINATION lib
-    RUNTIME DESTINATION bin
-)
+# Warnings for the code this project builds itself (tests, examples).
+set(TELNETTY_WARNINGS "")
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    set(TELNETTY_WARNINGS -Wall -Wextra -Wpedantic)
+endif()
 
+function(telnetty_program name source)
+    add_executable(${name} ${source})
+    target_link_libraries(${name} PRIVATE telnetty::telnetty)
+    target_compile_options(${name} PRIVATE ${TELNETTY_WARNINGS})
+    if(ENABLE_DEBUG)
+        target_compile_definitions(${name} PRIVATE TELNETTY_DEBUG_MEMORY)
+    endif()
+endfunction()
+
+# ---------------------------------------------------------------------------
+# Installation and package config (find_package(telnetty))
+# ---------------------------------------------------------------------------
+
+set(TELNETTY_CMAKE_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/telnetty)
+
+install(FILES ${TELNETTY_HEADERS} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/telnetty)
+install(TARGETS telnetty EXPORT telnetty-targets)
 install(EXPORT telnetty-targets
     FILE telnetty-targets.cmake
     NAMESPACE telnetty::
-    DESTINATION lib/cmake/telnetty
+    DESTINATION ${TELNETTY_CMAKE_DIR}
+)
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/telnetty-config.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/telnetty-config.cmake
+    INSTALL_DESTINATION ${TELNETTY_CMAKE_DIR}
+)
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/telnetty-config-version.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/telnetty-config.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/telnetty-config-version.cmake
+    DESTINATION ${TELNETTY_CMAKE_DIR}
 )
 
+# ---------------------------------------------------------------------------
 # Examples
+# ---------------------------------------------------------------------------
+
 if(BUILD_EXAMPLES)
-    # Simple server example
-    add_executable(server_simple examples/server_simple.c)
-    if(TELNETTY_ZLIB_FOUND)
-        target_link_libraries(server_simple ${ZLIB_LIBRARIES})
-    endif()
-    
-    # Simple client example
-    add_executable(client_simple examples/client_simple.c)
-    if(TELNETTY_ZLIB_FOUND)
-        target_link_libraries(client_simple ${ZLIB_LIBRARIES})
-    endif()
-    
-    # Optional libuv-based server example
-    find_package(PkgConfig)
+    foreach(example server_simple client_simple)
+        telnetty_program(${example} examples/${example}.c)
+        # Socket APIs are POSIX, not C99.
+        target_compile_definitions(${example} PRIVATE _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE _DARWIN_C_SOURCE)
+        install(TARGETS ${example} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}/examples)
+    endforeach()
+
+    find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
-        pkg_check_modules(LIBUV libuv)
+        pkg_check_modules(LIBUV QUIET libuv)
         if(LIBUV_FOUND)
-            add_executable(server_libuv examples/server_libuv.c)
-            target_link_libraries(server_libuv ${LIBUV_LIBRARIES} ${ZLIB_LIBRARIES})
+            telnetty_program(server_libuv examples/server_libuv.c)
             target_include_directories(server_libuv PRIVATE ${LIBUV_INCLUDE_DIRS})
+            target_link_libraries(server_libuv PRIVATE ${LIBUV_LDFLAGS})
+            install(TARGETS server_libuv RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}/examples)
         endif()
-    endif()
-    
-    # Install examples
-    install(TARGETS server_simple client_simple
-        RUNTIME DESTINATION bin/examples
-    )
-    if(TARGET server_libuv)
-        install(TARGETS server_libuv
-            RUNTIME DESTINATION bin/examples
-        )
     endif()
 
     if(BUILD_SUSPENDERS_EXAMPLE)
@@ -129,102 +146,129 @@ if(BUILD_EXAMPLES)
         set_property(TARGET server_suspenders PROPERTY C_STANDARD 11)
         target_compile_definitions(server_suspenders PRIVATE _DEFAULT_SOURCE)
         target_include_directories(server_suspenders PRIVATE ${_MEMENTO_INCLUDE} ${_SUSPENDERS_INCLUDE})
-        target_link_libraries(server_suspenders PRIVATE Threads::Threads)
-        if(TELNETTY_ZLIB_FOUND)
-            target_link_libraries(server_suspenders PRIVATE ${ZLIB_LIBRARIES})
-        endif()
+        target_link_libraries(server_suspenders PRIVATE telnetty::telnetty Threads::Threads)
         if(PkgConfig_FOUND)
-            pkg_check_modules(LIBURING liburing)
+            pkg_check_modules(LIBURING QUIET liburing)
             if(LIBURING_FOUND)
                 target_include_directories(server_suspenders PRIVATE ${LIBURING_INCLUDE_DIRS})
                 target_link_libraries(server_suspenders PRIVATE ${LIBURING_LIBRARIES})
             endif()
         endif()
-        install(TARGETS server_suspenders RUNTIME DESTINATION bin/examples)
+        install(TARGETS server_suspenders RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}/examples)
     endif()
 endif()
 
+# ---------------------------------------------------------------------------
 # Tests
+# ---------------------------------------------------------------------------
+
 if(BUILD_TESTS)
     enable_testing()
-    
-    # Basic functionality tests
-    add_executable(test_basic tests/basic.c)
-    if(TELNETTY_ZLIB_FOUND)
-        target_link_libraries(test_basic ${ZLIB_LIBRARIES})
-    endif()
-    
-    add_test(NAME test_basic COMMAND test_basic)
-    
-    # Comprehensive test suite
-    add_executable(test_comprehensive tests/test_comprehensive.c)
-    if(TELNETTY_ZLIB_FOUND)
-        target_link_libraries(test_comprehensive ${ZLIB_LIBRARIES})
-    endif()
-    
-    add_test(NAME test_comprehensive COMMAND test_comprehensive)
 
-    add_executable(test_qmethod tests/test_qmethod.c)
-    add_test(NAME test_qmethod COMMAND test_qmethod)
-
-    add_executable(test_protocols tests/test_protocols.c)
-    if(TELNETTY_ZLIB_FOUND)
-        target_compile_definitions(test_protocols PRIVATE TELNETTY_HAVE_ZLIB)
-        target_link_libraries(test_protocols ${ZLIB_LIBRARIES})
-    endif()
-    add_test(NAME test_protocols COMMAND test_protocols)
-
-    # Extended-surface regression tests: 1.1 fixes, additive API, MTTS, color, 
-    # MCP, extended events, RFC option round-trips, split-input torture.
-    # Every new bug fix or protocol addition should land a case here.
-    add_executable(test_extended tests/test_extended.c)
-    if(TELNETTY_ZLIB_FOUND)
-        target_compile_definitions(test_extended PRIVATE TELNETTY_HAVE_ZLIB)
-        target_link_libraries(test_extended ${ZLIB_LIBRARIES})
-    endif()
-    add_test(NAME test_extended COMMAND test_extended)
+    foreach(test basic test_comprehensive test_qmethod test_protocols test_extended)
+        telnetty_program(${test} tests/${test}.c)
+        add_test(NAME ${test} COMMAND ${test})
+    endforeach()
 
     # MANIAC Markov fuzz. Skipped when the generated matrices header is
-    # absent — regenerate with `python3 tests/maniac_gen.py`.
+    # absent; regenerate it with `python3 tests/maniac_gen.py`.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/maniac_matrices.h")
-        add_executable(test_maniac tests/test_maniac.c)
-        target_include_directories(test_maniac PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+        telnetty_program(test_maniac tests/test_maniac.c)
+        target_include_directories(test_maniac PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
         add_test(NAME test_maniac COMMAND test_maniac)
+    endif()
+
+    # The examples over real sockets, driven by a scripted MUD client that
+    # negotiates MCCP2/MCCP3 the way TinTin++ does.
+    if(BUILD_EXAMPLES AND TELNETTY_WITH_ZLIB AND NOT WIN32)
+        find_program(TELNETTY_PYTHON3 python3)
+        if(TELNETTY_PYTHON3)
+            add_test(NAME e2e_examples
+                COMMAND ${TELNETTY_PYTHON3} ${CMAKE_CURRENT_SOURCE_DIR}/tests/e2e_examples.py
+                        ${CMAKE_CURRENT_BINARY_DIR})
+            set_tests_properties(e2e_examples PROPERTIES TIMEOUT 120)
+        endif()
+    endif()
+
+    # Header hygiene: every header must compile on its own, and all of them
+    # together with every implementation enabled, as strict ISO C with no
+    # POSIX feature macros and warnings as errors. This is what a downstream
+    # project with -Wall -Wextra -Wpedantic -Werror sees.
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        set(_check_dir ${CMAKE_CURRENT_BINARY_DIR}/header_check)
+        set(_check_sources "")
+        foreach(header ${TELNETTY_HEADERS})
+            get_filename_component(_name ${header} NAME_WE)
+            file(WRITE ${_check_dir}/${_name}.c
+                "#include \"${_name}.h\"\nint ${_name}_check(void) { return 0; }\n")
+            list(APPEND _check_sources ${_check_dir}/${_name}.c)
+        endforeach()
+        file(WRITE ${_check_dir}/all.c
+            "#define TELNETTY_IMPLEMENTATION\n"
+            "#define TELNETTY_EVENTS_IMPLEMENTATION\n"
+            "#define TELNETTY_BUFFER_IMPLEMENTATION\n"
+            "#define TELNETTY_OPTIONS_IMPLEMENTATION\n"
+            "#define TELNETTY_MUD_IMPLEMENTATION\n"
+            "#define TELNETTY_COMPRESSION_IMPLEMENTATION\n"
+            "#define TELNETTY_COLOR_IMPLEMENTATION\n"
+            "#define TELNETTY_MCP_IMPLEMENTATION\n"
+            "#include \"telnetty_core.h\"\n#include \"telnetty_events.h\"\n"
+            "#include \"telnetty_buffer.h\"\n#include \"telnetty_options.h\"\n"
+            "#include \"telnetty_mud.h\"\n#include \"telnetty_compression.h\"\n"
+            "#include \"telnetty_color.h\"\n#include \"telnetty_mcp.h\"\n"
+            "int main(void) {\n"
+            "    telnetty_context_t* ctx = telnetty_create(0, 0);\n"
+            "    telnetty_destroy(ctx);\n"
+            "    return 0;\n"
+            "}\n")
+        add_executable(test_header_hygiene ${_check_dir}/all.c ${_check_sources})
+        target_link_libraries(test_header_hygiene PRIVATE telnetty::telnetty)
+        set_target_properties(test_header_hygiene PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+        target_compile_options(test_header_hygiene PRIVATE ${TELNETTY_WARNINGS} -Werror)
+        add_test(NAME test_header_hygiene COMMAND test_header_hygiene)
+
+        # The headers carry extern "C" guards; check they really build as C++.
+        include(CheckLanguage)
+        check_language(CXX)
+        if(CMAKE_CXX_COMPILER)
+            enable_language(CXX)
+            configure_file(${_check_dir}/all.c ${_check_dir}/all_cxx.cpp COPYONLY)
+            add_executable(test_header_hygiene_cxx ${_check_dir}/all_cxx.cpp)
+            target_link_libraries(test_header_hygiene_cxx PRIVATE telnetty::telnetty)
+            set_target_properties(test_header_hygiene_cxx PROPERTIES CXX_STANDARD 11)
+            target_compile_options(test_header_hygiene_cxx PRIVATE -Wall -Wextra -Werror)
+            add_test(NAME test_header_hygiene_cxx COMMAND test_header_hygiene_cxx)
+        endif()
     endif()
 endif()
 
+# ---------------------------------------------------------------------------
 # Documentation
-find_package(Doxygen)
-if(DOXYGEN_FOUND)
-    set(DOXYGEN_IN ${CMAKE_CURRENT_SOURCE_DIR}/Doxyfile.in)
-    set(DOXYGEN_OUT ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile)
-    
-    configure_file(${DOXYGEN_IN} ${DOXYGEN_OUT} @ONLY)
-    
-    add_custom_target(doc ALL
-        COMMAND ${DOXYGEN_EXECUTABLE} ${DOXYGEN_OUT}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-        COMMENT "Generating API documentation with Doxygen"
-        VERBATIM
-    )
-    
-    install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/html
-        DESTINATION share/doc/telnetty
-    )
+# ---------------------------------------------------------------------------
+
+if(BUILD_DOCS)
+    find_package(Doxygen REQUIRED)
+    set(DOXYGEN_PROJECT_NAME "Telnetty")
+    set(DOXYGEN_PROJECT_NUMBER ${PROJECT_VERSION})
+    set(DOXYGEN_USE_MDFILE_AS_MAINPAGE README.md)
+    set(DOXYGEN_EXTRACT_STATIC YES)
+    set(DOXYGEN_OPTIMIZE_OUTPUT_FOR_C YES)
+    set(DOXYGEN_PREDEFINED
+        TELNETTY_IMPLEMENTATION TELNETTY_EVENTS_IMPLEMENTATION
+        TELNETTY_BUFFER_IMPLEMENTATION TELNETTY_OPTIONS_IMPLEMENTATION
+        TELNETTY_MUD_IMPLEMENTATION TELNETTY_COMPRESSION_IMPLEMENTATION
+        TELNETTY_COLOR_IMPLEMENTATION TELNETTY_MCP_IMPLEMENTATION
+        TELNETTY_HAVE_ZLIB TELNETTY_UNUSED=)
+    doxygen_add_docs(doc ${TELNETTY_HEADERS} README.md
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Generating API documentation with Doxygen")
 endif()
 
-# Print configuration
-message(STATUS "Telnetty Library Configuration:")
-message(STATUS "  Version: ${PROJECT_VERSION}")
-message(STATUS "  C Compiler: ${CMAKE_C_COMPILER}")
-message(STATUS "  Build examples: ${BUILD_EXAMPLES}")
-message(STATUS "  Build tests: ${BUILD_TESTS}")
-message(STATUS "  Enable zlib: ${ENABLE_ZLIB}")
-message(STATUS "  Enable debug: ${ENABLE_DEBUG}")
-if(TELNETTY_ZLIB_FOUND)
-    message(STATUS "  zlib found: ${ZLIB_VERSION_STRING}")
-endif()
-if(LIBUV_FOUND)
-    message(STATUS "  libuv found: ${LIBUV_VERSION}")
+if(TELNETTY_IS_TOP_LEVEL)
+    message(STATUS "Telnetty ${PROJECT_VERSION}")
+    message(STATUS "  Build type:     ${CMAKE_BUILD_TYPE}")
+    message(STATUS "  zlib (MCCP):    ${TELNETTY_WITH_ZLIB}")
+    message(STATUS "  Examples:       ${BUILD_EXAMPLES}")
+    message(STATUS "  Tests:          ${BUILD_TESTS}")
+    message(STATUS "  Docs:           ${BUILD_DOCS}")
 endif()

@@ -13,7 +13,7 @@
  * - Multi-package support
  * 
  * @author Damus <damus@straylightrun.org>
- * @version 1.1.0
+ * @version 1.2.0
  * 
  */
 
@@ -177,6 +177,7 @@ typedef struct {
  * MCP Core Functions
  * ============================================================================ */
 
+#ifdef TELNETTY_MCP_IMPLEMENTATION
 /**
  * Enable MCP 2.1 protocol
  * 
@@ -186,7 +187,7 @@ typedef struct {
  * @param key Authentication key (optional)
  * @return 0 on success, -1 on failure
  */
-static int telnetty_enable_mcp(
+static TELNETTY_UNUSED int telnetty_enable_mcp(
     telnetty_context_t* ctx,
     bool server_mode,
     telnetty_mcp_auth_type_t auth_type,
@@ -209,7 +210,7 @@ static TELNETTY_UNUSED int telnetty_disable_mcp(telnetty_context_t* ctx);
  * @param command Command received
  * @param user_data User data (should be telnetty_mcp_data_t*)
  */
-static void telnetty_mcp_handler(
+static TELNETTY_UNUSED void telnetty_mcp_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -227,7 +228,7 @@ static void telnetty_mcp_handler(
  * @param user_data User data for handler
  * @return 0 on success, -1 on failure
  */
-static int telnetty_mcp_register_package(
+static TELNETTY_UNUSED int telnetty_mcp_register_package(
     telnetty_context_t* ctx,
     const char* name,
     const char* version,
@@ -243,7 +244,7 @@ static int telnetty_mcp_register_package(
  * @param name Package name
  * @return 0 on success, -1 on failure
  */
-static int telnetty_mcp_unregister_package(
+static TELNETTY_UNUSED int telnetty_mcp_unregister_package(
     telnetty_context_t* ctx,
     const char* name
 );
@@ -258,7 +259,7 @@ static int telnetty_mcp_unregister_package(
  *        is sent as `data: "<value>"`. NULL sends the message with no arguments.
  * @return 0 on success, -1 on failure
  */
-static int telnetty_mcp_send(
+static TELNETTY_UNUSED int telnetty_mcp_send(
     telnetty_context_t* ctx,
     const char* package,
     const char* message,
@@ -275,7 +276,7 @@ static int telnetty_mcp_send(
  * @param ... Format arguments
  * @return 0 on success, -1 on failure
  */
-static int telnetty_mcp_sendf(
+static TELNETTY_UNUSED int telnetty_mcp_sendf(
     telnetty_context_t* ctx,
     const char* package,
     const char* message,
@@ -291,7 +292,7 @@ static int telnetty_mcp_sendf(
  * @param credentials Authentication credentials (JSON format)
  * @return 0 on success, -1 on failure
  */
-static int telnetty_mcp_send_auth(
+static TELNETTY_UNUSED int telnetty_mcp_send_auth(
     telnetty_context_t* ctx,
     telnetty_mcp_auth_type_t auth_type,
     const char* credentials
@@ -305,7 +306,7 @@ static int telnetty_mcp_send_auth(
  * @param package_count Number of packages
  * @return 0 on success, -1 on failure
  */
-static int telnetty_mcp_send_negotiate(
+static TELNETTY_UNUSED int telnetty_mcp_send_negotiate(
     telnetty_context_t* ctx,
     const telnetty_mcp_package_t* packages,
     size_t package_count
@@ -320,7 +321,7 @@ static int telnetty_mcp_send_negotiate(
  * @param code Error code (optional)
  * @return 0 on success, -1 on failure
  */
-static int telnetty_mcp_send_error(
+static TELNETTY_UNUSED int telnetty_mcp_send_error(
     telnetty_context_t* ctx,
     const char* package,
     const char* message,
@@ -334,7 +335,7 @@ static int telnetty_mcp_send_error(
  * @param reason Close reason (optional)
  * @return 0 on success, -1 on failure
  */
-static int telnetty_mcp_send_close(
+static TELNETTY_UNUSED int telnetty_mcp_send_close(
     telnetty_context_t* ctx,
     const char* reason
 );
@@ -350,7 +351,7 @@ static int telnetty_mcp_send_close(
  * @param name Package name
  * @return Package structure or NULL if not found
  */
-static telnetty_mcp_package_t* telnetty_mcp_get_package(
+static TELNETTY_UNUSED telnetty_mcp_package_t* telnetty_mcp_get_package(
     telnetty_context_t* ctx,
     const char* name
 );
@@ -362,7 +363,7 @@ static telnetty_mcp_package_t* telnetty_mcp_get_package(
  * @param name Package name
  * @return true if package is active, false otherwise
  */
-static bool telnetty_mcp_is_package_active(
+static TELNETTY_UNUSED bool telnetty_mcp_is_package_active(
     telnetty_context_t* ctx,
     const char* name
 );
@@ -374,7 +375,7 @@ static bool telnetty_mcp_is_package_active(
  * @param name Package name
  * @return 0 on success, -1 on failure
  */
-static int telnetty_mcp_activate_package(
+static TELNETTY_UNUSED int telnetty_mcp_activate_package(
     telnetty_context_t* ctx,
     const char* name
 );
@@ -386,7 +387,7 @@ static int telnetty_mcp_activate_package(
  * @param name Package name
  * @return 0 on success, -1 on failure
  */
-static int telnetty_mcp_deactivate_package(
+static TELNETTY_UNUSED int telnetty_mcp_deactivate_package(
     telnetty_context_t* ctx,
     const char* name
 );
@@ -399,7 +400,7 @@ static int telnetty_mcp_deactivate_package(
  * @param user_data User data for handler
  * @return 0 on success, -1 on failure
  */
-static int telnetty_mcp_set_default_handler(
+static TELNETTY_UNUSED int telnetty_mcp_set_default_handler(
     telnetty_context_t* ctx,
     telnetty_mcp_package_handler_t handler,
     void* user_data
@@ -441,7 +442,7 @@ static TELNETTY_UNUSED size_t telnetty_mcp_get_package_count(telnetty_context_t*
  * @param max_packages Maximum number of packages to return
  * @return Number of packages returned
  */
-static size_t telnetty_mcp_get_packages(
+static TELNETTY_UNUSED size_t telnetty_mcp_get_packages(
     telnetty_context_t* ctx,
     telnetty_mcp_package_t* packages,
     size_t max_packages
@@ -465,7 +466,7 @@ static TELNETTY_UNUSED int telnetty_mcp_generate_message_id(telnetty_context_t* 
  * @param message Output parsed message structure
  * @return 0 on success, -1 on failure
  */
-static int telnetty_mcp_parse_message(
+static TELNETTY_UNUSED int telnetty_mcp_parse_message(
     const uint8_t* data,
     size_t length,
     telnetty_mcp_message_t* message
@@ -479,7 +480,7 @@ static int telnetty_mcp_parse_message(
  * @param buffer_size Buffer size
  * @return Number of bytes written or -1 on failure
  */
-static int telnetty_mcp_build_message(
+static TELNETTY_UNUSED int telnetty_mcp_build_message(
     const telnetty_mcp_message_t* message,
     uint8_t* buffer,
     size_t buffer_size
@@ -498,7 +499,9 @@ static int telnetty_mcp_build_message(
 static TELNETTY_UNUSED int telnetty_mcp_register_builtin_packages(telnetty_context_t* ctx);
 
 /**
- * MCP Core package handler
+ * Placeholder handlers for the builtin packages: mcp-core, simple-edit,
+ * redirect, dns. They are registered inactive and do nothing; see
+ * telnetty_mcp_register_builtin_packages.
  * 
  * @param ctx TELNET context
  * @param package Package name
@@ -506,7 +509,28 @@ static TELNETTY_UNUSED int telnetty_mcp_register_builtin_packages(telnetty_conte
  * @param data Message data
  * @param user_data User data
  */
-static void telnetty_mcp_core_handler(
+static TELNETTY_UNUSED void telnetty_mcp_core_handler(
+    telnetty_context_t* ctx,
+    const char* package,
+    const char* message,
+    const char* data,
+    void* user_data
+);
+static TELNETTY_UNUSED void telnetty_mcp_simpleedit_handler(
+    telnetty_context_t* ctx,
+    const char* package,
+    const char* message,
+    const char* data,
+    void* user_data
+);
+static TELNETTY_UNUSED void telnetty_mcp_redirect_handler(
+    telnetty_context_t* ctx,
+    const char* package,
+    const char* message,
+    const char* data,
+    void* user_data
+);
+static TELNETTY_UNUSED void telnetty_mcp_dns_handler(
     telnetty_context_t* ctx,
     const char* package,
     const char* message,
@@ -514,56 +538,7 @@ static void telnetty_mcp_core_handler(
     void* user_data
 );
 
-/**
- * MCP SimpleEdit package handler
- * 
- * @param ctx TELNET context
- * @param package Package name
- * @param message Message type
- * @param data Message data
- * @param user_data User data
- */
-static void telnetty_mcp_simpleedit_handler(
-    telnetty_context_t* ctx,
-    const char* package,
-    const char* message,
-    const char* data,
-    void* user_data
-);
-
-/**
- * MCP Redirect package handler
- * 
- * @param ctx TELNET context
- * @param package Package name
- * @param message Message type
- * @param data Message data
- * @param user_data User data
- */
-static void telnetty_mcp_redirect_handler(
-    telnetty_context_t* ctx,
-    const char* package,
-    const char* message,
-    const char* data,
-    void* user_data
-);
-
-/**
- * MCP DNS package handler
- * 
- * @param ctx TELNET context
- * @param package Package name
- * @param message Message type
- * @param data Message data
- * @param user_data User data
- */
-static void telnetty_mcp_dns_handler(
-    telnetty_context_t* ctx,
-    const char* package,
-    const char* message,
-    const char* data,
-    void* user_data
-);
+#endif /* TELNETTY_MCP_IMPLEMENTATION */
 
 /* ============================================================================
  * Implementation
@@ -578,9 +553,9 @@ static void telnetty_mcp_dns_handler(
 #include <stdarg.h>
 #include <ctype.h>
 
-static int telnetty__mcp_write_line(telnetty_context_t* ctx, const char* line);
-static void telnetty__mcp_on_data(telnetty_context_t* ctx, const uint8_t* data, size_t len);
-static void telnetty__mcp_send_negotiate_all(telnetty_context_t* ctx, telnetty_mcp_data_t* d);
+static TELNETTY_UNUSED int telnetty__mcp_write_line(telnetty_context_t* ctx, const char* line);
+static TELNETTY_UNUSED void telnetty__mcp_on_data(telnetty_context_t* ctx, const uint8_t* data, size_t len);
+static TELNETTY_UNUSED void telnetty__mcp_send_negotiate_all(telnetty_context_t* ctx, telnetty_mcp_data_t* d);
 
 /* Memory allocation wrappers */
 #ifndef TELNETTY_MCP_MALLOC
@@ -591,6 +566,22 @@ static void telnetty__mcp_send_negotiate_all(telnetty_context_t* ctx, telnetty_m
 #define TELNETTY_MCP_FREE(ptr) free(ptr)
 #endif
 
+/* strdup / strndup are POSIX, not C99, and allocate with libc malloc
+ * rather than TELNETTY_MCP_MALLOC, which every MCP string is freed with. */
+static TELNETTY_UNUSED char* telnetty__mcp_strndup(const char* s, size_t n) {
+    size_t len = 0;
+    while (len < n && s[len]) len++;
+    char* out = (char*)TELNETTY_MCP_MALLOC(len + 1);
+    if (!out) return NULL;
+    memcpy(out, s, len);
+    out[len] = '\0';
+    return out;
+}
+
+static TELNETTY_UNUSED char* telnetty__mcp_strdup(const char* s) {
+    return telnetty__mcp_strndup(s, (size_t)-1);
+}
+
 #ifndef TELNETTY_MCP_REALLOC
 #define TELNETTY_MCP_REALLOC(ptr, size) realloc(ptr, size)
 #endif
@@ -598,7 +589,7 @@ static void telnetty__mcp_send_negotiate_all(telnetty_context_t* ctx, telnetty_m
 /* Forward declarations for internal functions */
 static TELNETTY_UNUSED telnetty_mcp_data_t* telnetty_mcp_data_create(void);
 static TELNETTY_UNUSED void telnetty_mcp_data_destroy(telnetty_mcp_data_t* data);
-static telnetty_mcp_package_t* telnetty_mcp_package_create(
+static TELNETTY_UNUSED telnetty_mcp_package_t* telnetty_mcp_package_create(
     const char* name,
     const char* version,
     const char* description,
@@ -606,7 +597,7 @@ static telnetty_mcp_package_t* telnetty_mcp_package_create(
     void* user_data
 );
 static TELNETTY_UNUSED void telnetty_mcp_package_destroy(telnetty_mcp_package_t* package);
-static int telnetty_mcp_send_subnegotiation(
+static TELNETTY_UNUSED int telnetty_mcp_send_subnegotiation(
     telnetty_context_t* ctx,
     const uint8_t* data,
     size_t length
@@ -683,7 +674,7 @@ static TELNETTY_UNUSED void telnetty_mcp_data_destroy(telnetty_mcp_data_t* data)
     TELNETTY_MCP_FREE(data);
 }
 
-static telnetty_mcp_package_t* telnetty_mcp_package_create(
+static TELNETTY_UNUSED telnetty_mcp_package_t* telnetty_mcp_package_create(
     const char* name,
     const char* version,
     const char* description,
@@ -698,7 +689,7 @@ static telnetty_mcp_package_t* telnetty_mcp_package_create(
     memset(package, 0, sizeof(telnetty_mcp_package_t));
     
     /* Copy name */
-    package->name = strdup(name);
+    package->name = telnetty__mcp_strdup(name);
     if (!package->name) {
         TELNETTY_MCP_FREE(package);
         return NULL;
@@ -706,7 +697,7 @@ static telnetty_mcp_package_t* telnetty_mcp_package_create(
     
     /* Copy version */
     if (version) {
-        package->version = strdup(version);
+        package->version = telnetty__mcp_strdup(version);
         if (!package->version) {
             TELNETTY_MCP_FREE(package->name);
             TELNETTY_MCP_FREE(package);
@@ -716,7 +707,7 @@ static telnetty_mcp_package_t* telnetty_mcp_package_create(
     
     /* Copy description */
     if (description) {
-        package->description = strdup(description);
+        package->description = telnetty__mcp_strdup(description);
         if (!package->description) {
             TELNETTY_MCP_FREE(package->name);
             TELNETTY_MCP_FREE(package->version);
@@ -751,9 +742,9 @@ static TELNETTY_UNUSED void telnetty_mcp_package_destroy(telnetty_mcp_package_t*
  * MCP Core Implementation
  * ============================================================================ */
 
-static void telnetty_mcp_data_free_cb(void* p);
+static TELNETTY_UNUSED void telnetty_mcp_data_free_cb(void* p);
 
-static int telnetty_enable_mcp(
+static TELNETTY_UNUSED int telnetty_enable_mcp(
     telnetty_context_t* ctx,
     bool server_mode,
     telnetty_mcp_auth_type_t auth_type,
@@ -770,7 +761,7 @@ static int telnetty_enable_mcp(
     
     /* Set authentication key if provided */
     if (key) {
-        mcp_data->server_key = strdup(key);
+        mcp_data->server_key = telnetty__mcp_strdup(key);
         if (!mcp_data->server_key) {
             telnetty_mcp_data_destroy(mcp_data);
             return -1;
@@ -797,11 +788,11 @@ static int telnetty_enable_mcp(
     return 0;
 }
 
-static void telnetty_mcp_data_free_cb(void* p) {
+static TELNETTY_UNUSED void telnetty_mcp_data_free_cb(void* p) {
     telnetty_mcp_data_destroy((telnetty_mcp_data_t*)p);
 }
 
-static telnetty_mcp_data_t* telnetty_mcp_of(telnetty_context_t* ctx) {
+static TELNETTY_UNUSED telnetty_mcp_data_t* telnetty_mcp_of(telnetty_context_t* ctx) {
     if (!ctx) return NULL;
     telnetty_option_t* opt = ctx->options[TELNETTY_MCP_STATE_TELOPT];
     return (opt && opt->user_data) ? (telnetty_mcp_data_t*)opt->user_data : NULL;
@@ -821,7 +812,7 @@ static TELNETTY_UNUSED int telnetty_disable_mcp(telnetty_context_t* ctx) {
     return 0;
 }
 
-static void telnetty_mcp_handler(
+static TELNETTY_UNUSED void telnetty_mcp_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     uint8_t command,
@@ -854,7 +845,7 @@ static void telnetty_mcp_handler(
  * Package Management Implementation
  * ============================================================================ */
 
-static int telnetty_mcp_register_package(
+static TELNETTY_UNUSED int telnetty_mcp_register_package(
     telnetty_context_t* ctx,
     const char* name,
     const char* version,
@@ -880,7 +871,7 @@ static int telnetty_mcp_register_package(
     return 0;
 }
 
-static int telnetty_mcp_unregister_package(
+static TELNETTY_UNUSED int telnetty_mcp_unregister_package(
     telnetty_context_t* ctx,
     const char* name
 ) {
@@ -898,7 +889,7 @@ static int telnetty_mcp_unregister_package(
     return -1;
 }
 
-static telnetty_mcp_package_t* telnetty_mcp_get_package(
+static TELNETTY_UNUSED telnetty_mcp_package_t* telnetty_mcp_get_package(
     telnetty_context_t* ctx,
     const char* name
 ) {
@@ -911,7 +902,7 @@ static telnetty_mcp_package_t* telnetty_mcp_get_package(
     return NULL;
 }
 
-static bool telnetty_mcp_is_package_active(
+static TELNETTY_UNUSED bool telnetty_mcp_is_package_active(
     telnetty_context_t* ctx,
     const char* name
 ) {
@@ -919,7 +910,7 @@ static bool telnetty_mcp_is_package_active(
     return package ? package->active : false;
 }
 
-static int telnetty_mcp_activate_package(
+static TELNETTY_UNUSED int telnetty_mcp_activate_package(
     telnetty_context_t* ctx,
     const char* name
 ) {
@@ -930,7 +921,7 @@ static int telnetty_mcp_activate_package(
     return 0;
 }
 
-static int telnetty_mcp_deactivate_package(
+static TELNETTY_UNUSED int telnetty_mcp_deactivate_package(
     telnetty_context_t* ctx,
     const char* name
 ) {
@@ -941,7 +932,7 @@ static int telnetty_mcp_deactivate_package(
     return 0;
 }
 
-static int telnetty_mcp_set_default_handler(
+static TELNETTY_UNUSED int telnetty_mcp_set_default_handler(
     telnetty_context_t* ctx,
     telnetty_mcp_package_handler_t handler,
     void* user_data
@@ -957,7 +948,7 @@ static int telnetty_mcp_set_default_handler(
  * Message Functions Implementation
  * ============================================================================ */
 
-static int telnetty_mcp_send_subnegotiation(
+static TELNETTY_UNUSED int telnetty_mcp_send_subnegotiation(
     telnetty_context_t* ctx,
     const uint8_t* data,
     size_t length
@@ -968,7 +959,7 @@ static int telnetty_mcp_send_subnegotiation(
 }
 
 /* Quote an MCP simple value. Caller frees the result. */
-static char* telnetty__mcp_quote(const char* s) {
+static TELNETTY_UNUSED char* telnetty__mcp_quote(const char* s) {
     size_t n = 0;
     for (const char* p = s ? s : ""; *p; p++) {
         if (*p == '"' || *p == '\\') n++;
@@ -989,7 +980,7 @@ static char* telnetty__mcp_quote(const char* s) {
 
 /* True when `data` is already a `key: value` argument list. A leading '{'
  * or '[' is a legacy JSON blob and is wrapped instead. */
-static int telnetty__mcp_looks_like_keyvals(const char* data) {
+static TELNETTY_UNUSED int telnetty__mcp_looks_like_keyvals(const char* data) {
     if (!data || data[0] == '{' || data[0] == '[') return 0;
     const char* p = data;
     if (!isalpha((unsigned char)*p) && *p != '_') return 0;
@@ -997,9 +988,9 @@ static int telnetty__mcp_looks_like_keyvals(const char* data) {
     return *p == ':';
 }
 
-static const char* telnetty__mcp_wire_key(telnetty_context_t* ctx, telnetty_mcp_data_t* d);
+static TELNETTY_UNUSED const char* telnetty__mcp_wire_key(telnetty_context_t* ctx, telnetty_mcp_data_t* d);
 
-static int telnetty_mcp_send(
+static TELNETTY_UNUSED int telnetty_mcp_send(
     telnetty_context_t* ctx,
     const char* package,
     const char* message,
@@ -1023,7 +1014,7 @@ static int telnetty_mcp_send(
     char* args = NULL;
     if (data && data[0]) {
         if (telnetty__mcp_looks_like_keyvals(data)) {
-            args = strdup(data);
+            args = telnetty__mcp_strdup(data);
         } else {
             char* quoted = telnetty__mcp_quote(data);
             if (!quoted) return -1;
@@ -1051,7 +1042,7 @@ static int telnetty_mcp_send(
     return r < 0 ? -1 : 0;
 }
 
-static int telnetty_mcp_sendf(
+static TELNETTY_UNUSED int telnetty_mcp_sendf(
     telnetty_context_t* ctx,
     const char* package,
     const char* message,
@@ -1092,7 +1083,7 @@ static int telnetty_mcp_sendf(
     return result;
 }
 
-static int telnetty_mcp_send_auth(
+static TELNETTY_UNUSED int telnetty_mcp_send_auth(
     telnetty_context_t* ctx,
     telnetty_mcp_auth_type_t auth_type,
     const char* credentials
@@ -1121,7 +1112,7 @@ static int telnetty_mcp_send_auth(
         credentials ? credentials : "");
 }
 
-static int telnetty_mcp_send_negotiate(
+static TELNETTY_UNUSED int telnetty_mcp_send_negotiate(
     telnetty_context_t* ctx,
     const telnetty_mcp_package_t* packages,
     size_t package_count
@@ -1155,7 +1146,7 @@ static int telnetty_mcp_send_negotiate(
     return 0;
 }
 
-static int telnetty_mcp_send_error(
+static TELNETTY_UNUSED int telnetty_mcp_send_error(
     telnetty_context_t* ctx,
     const char* package,
     const char* message,
@@ -1178,7 +1169,7 @@ static int telnetty_mcp_send_error(
         code >= 0 ? code_buf : "");
 }
 
-static int telnetty_mcp_send_close(
+static TELNETTY_UNUSED int telnetty_mcp_send_close(
     telnetty_context_t* ctx,
     const char* reason
 ) {
@@ -1221,7 +1212,7 @@ static TELNETTY_UNUSED size_t telnetty_mcp_get_package_count(telnetty_context_t*
 /* Per-context PRNG seed for message IDs and auth keys. Not
  * cryptographically strong — good enough to be unpredictable to a peer that
  * doesn't already own the process. */
-static uint64_t telnetty__mcp_seed(telnetty_context_t* ctx) {
+static TELNETTY_UNUSED uint64_t telnetty__mcp_seed(telnetty_context_t* ctx) {
     uint64_t s = (uint64_t)time(NULL);
     s ^= (uint64_t)(uintptr_t)ctx;
     s = s * 6364136223846793005ULL + 1442695040888963407ULL;
@@ -1230,7 +1221,7 @@ static uint64_t telnetty__mcp_seed(telnetty_context_t* ctx) {
 
 /* Return a caller-owned base-36 string of `n_chars` characters seeded from
  * `s`. Suitable for keys / message IDs; deterministic given the seed. */
-static char* telnetty__mcp_random_string(uint64_t* s, size_t n_chars) {
+static TELNETTY_UNUSED char* telnetty__mcp_random_string(uint64_t* s, size_t n_chars) {
     static const char alphabet[] = "0123456789abcdefghijklmnopqrstuvwxyz";
     char* out = (char*)TELNETTY_MCP_MALLOC(n_chars + 1);
     if (!out) return NULL;
@@ -1243,7 +1234,7 @@ static char* telnetty__mcp_random_string(uint64_t* s, size_t n_chars) {
 }
 
 /* Lazily materialize the key we would offer as a client. */
-static const char* telnetty__mcp_ensure_key(telnetty_context_t* ctx, telnetty_mcp_data_t* d) {
+static TELNETTY_UNUSED const char* telnetty__mcp_ensure_key(telnetty_context_t* ctx, telnetty_mcp_data_t* d) {
     if (d->auth_key) return d->auth_key;
     uint64_t s = telnetty__mcp_seed(ctx);
     d->auth_key = telnetty__mcp_random_string(&s, 12);
@@ -1253,12 +1244,12 @@ static const char* telnetty__mcp_ensure_key(telnetty_context_t* ctx, telnetty_mc
 /* Key that belongs on every message after the opening mcp line.
  * Falls back to a locally generated key so telnetty_mcp_send works
  * before the handshake has finished. */
-static const char* telnetty__mcp_wire_key(telnetty_context_t* ctx, telnetty_mcp_data_t* d) {
+static TELNETTY_UNUSED const char* telnetty__mcp_wire_key(telnetty_context_t* ctx, telnetty_mcp_data_t* d) {
     if (d->session_key) return d->session_key;
     return telnetty__mcp_ensure_key(ctx, d);
 }
 
-static int telnetty__mcp_casecmp(const char* a, const char* b) {
+static TELNETTY_UNUSED int telnetty__mcp_casecmp(const char* a, const char* b) {
     while (*a && *b) {
         int ca = tolower((unsigned char)*a++);
         int cb = tolower((unsigned char)*b++);
@@ -1267,7 +1258,7 @@ static int telnetty__mcp_casecmp(const char* a, const char* b) {
     return (int)tolower((unsigned char)*a) - (int)tolower((unsigned char)*b);
 }
 
-static int telnetty__mcp_parse_ver(const char* s, int* maj, int* min) {
+static TELNETTY_UNUSED int telnetty__mcp_parse_ver(const char* s, int* maj, int* min) {
     if (!s) return -1;
     int a = 0, b = 0;
     if (sscanf(s, "%d.%d", &a, &b) != 2) return -1;
@@ -1277,13 +1268,13 @@ static int telnetty__mcp_parse_ver(const char* s, int* maj, int* min) {
     return 0;
 }
 
-static int telnetty__mcp_ver_geq(int a_maj, int a_min, int b_maj, int b_min) {
+static TELNETTY_UNUSED int telnetty__mcp_ver_geq(int a_maj, int a_min, int b_maj, int b_min) {
     if (a_maj != b_maj) return a_maj > b_maj;
     return a_min >= b_min;
 }
 
 /* Ranges are inclusive. Missing `to` means a single version. */
-static int telnetty__mcp_range_overlap(const char* a_min, const char* a_max,
+static TELNETTY_UNUSED int telnetty__mcp_range_overlap(const char* a_min, const char* a_max,
                                        const char* b_min, const char* b_max) {
     int aM, am, bM, bm, cM, cm, dM, dm;
     if (telnetty__mcp_parse_ver(a_min, &aM, &am) != 0) return 0;
@@ -1296,10 +1287,10 @@ static int telnetty__mcp_range_overlap(const char* a_min, const char* a_max,
     return telnetty__mcp_ver_geq(dM, dm, aM, am) && telnetty__mcp_ver_geq(bM, bm, cM, cm);
 }
 
-static void telnetty__mcp_cord_release(telnetty_mcp_cord_t* c);
+static TELNETTY_UNUSED void telnetty__mcp_cord_release(telnetty_mcp_cord_t* c);
 
 /* Look up a cord slot by tag; NULL means "not open". */
-static telnetty_mcp_cord_t* telnetty__mcp_cord_find(telnetty_mcp_data_t* d, const char* tag) {
+static TELNETTY_UNUSED telnetty_mcp_cord_t* telnetty__mcp_cord_find(telnetty_mcp_data_t* d, const char* tag) {
     if (!tag) return NULL;
     for (size_t i = 0; i < sizeof(d->cords)/sizeof(d->cords[0]); i++) {
         if (d->cords[i].tag && strcmp(d->cords[i].tag, tag) == 0) {
@@ -1310,7 +1301,7 @@ static telnetty_mcp_cord_t* telnetty__mcp_cord_find(telnetty_mcp_data_t* d, cons
 }
 
 /* Reserve an empty cord slot, expiring stale ones first. */
-static telnetty_mcp_cord_t* telnetty__mcp_cord_new(telnetty_mcp_data_t* d, const char* tag) {
+static TELNETTY_UNUSED telnetty_mcp_cord_t* telnetty__mcp_cord_new(telnetty_mcp_data_t* d, const char* tag) {
     time_t now = time(NULL);
     for (size_t i = 0; i < sizeof(d->cords)/sizeof(d->cords[0]); i++) {
         if (d->cords[i].tag && d->cords[i].deadline > 0 && d->cords[i].deadline < now) {
@@ -1319,7 +1310,7 @@ static telnetty_mcp_cord_t* telnetty__mcp_cord_new(telnetty_mcp_data_t* d, const
     }
     for (size_t i = 0; i < sizeof(d->cords)/sizeof(d->cords[0]); i++) {
         if (!d->cords[i].tag) {
-            d->cords[i].tag = strdup(tag);
+            d->cords[i].tag = telnetty__mcp_strdup(tag);
             if (!d->cords[i].tag) return NULL;
             d->cords[i].deadline = now + 60;
             return &d->cords[i];
@@ -1328,7 +1319,7 @@ static telnetty_mcp_cord_t* telnetty__mcp_cord_new(telnetty_mcp_data_t* d, const
     return NULL;
 }
 
-static void telnetty__mcp_cord_release(telnetty_mcp_cord_t* c) {
+static TELNETTY_UNUSED void telnetty__mcp_cord_release(telnetty_mcp_cord_t* c) {
     if (!c) return;
     TELNETTY_MCP_FREE(c->tag);
     TELNETTY_MCP_FREE(c->accum);
@@ -1340,7 +1331,7 @@ static void telnetty__mcp_cord_release(telnetty_mcp_cord_t* c) {
 
 /* Append `n` bytes to the cord's accumulator. Grows on demand up to
  * TELNETTY_MCP_MAX_LINE. */
-static int telnetty__mcp_cord_append(telnetty_mcp_cord_t* c, const char* s, size_t n) {
+static TELNETTY_UNUSED int telnetty__mcp_cord_append(telnetty_mcp_cord_t* c, const char* s, size_t n) {
     size_t need = c->accum_len + n + 1;
     if (need > TELNETTY_MCP_MAX_LINE) return -1;
     if (need > c->accum_cap) {
@@ -1358,14 +1349,14 @@ static int telnetty__mcp_cord_append(telnetty_mcp_cord_t* c, const char* s, size
 }
 
 /* Advance `*p` past ASCII whitespace. */
-static void telnetty__mcp_skip_ws(const char** p) {
+static TELNETTY_UNUSED void telnetty__mcp_skip_ws(const char** p) {
     while (**p == ' ' || **p == '\t') (*p)++;
 }
 
 /* Extract the next MCP token from `*p`. If the value is quoted, unescape
  * \" and \\. Returns a caller-owned nul-terminated string, or NULL if the
  * input is malformed. Advances `*p` past the token. */
-static char* telnetty__mcp_next_token(const char** p) {
+static TELNETTY_UNUSED char* telnetty__mcp_next_token(const char** p) {
     telnetty__mcp_skip_ws(p);
     if (**p == '\0') return NULL;
 
@@ -1408,7 +1399,7 @@ static char* telnetty__mcp_next_token(const char** p) {
 
 /* Extract the value tied to a `key:` — either a quoted string or a bare
  * token up to the next whitespace. Returns caller-owned string. */
-static char* telnetty__mcp_next_value(const char** p) {
+static TELNETTY_UNUSED char* telnetty__mcp_next_value(const char** p) {
     telnetty__mcp_skip_ws(p);
     if (**p == '"') {
         return telnetty__mcp_next_token(p);
@@ -1425,7 +1416,7 @@ static char* telnetty__mcp_next_value(const char** p) {
 
 /* Scan a key/value string for `key: value` and return a caller-owned copy
  * of the value, or NULL if not present. */
-static char* telnetty__mcp_kv_get(const char* rest, const char* key) {
+static TELNETTY_UNUSED char* telnetty__mcp_kv_get(const char* rest, const char* key) {
     if (!rest || !key) return NULL;
     size_t klen = strlen(key);
     const char* p = rest;
@@ -1449,7 +1440,7 @@ static char* telnetty__mcp_kv_get(const char* rest, const char* key) {
 
 /* Emit `#$#<line>\r\n` on the wire, bypassing telnetty_send's IAC-escape
  * since MCP lines are ASCII and IAC-free by construction. */
-static int telnetty__mcp_write_line(telnetty_context_t* ctx, const char* line) {
+static TELNETTY_UNUSED int telnetty__mcp_write_line(telnetty_context_t* ctx, const char* line) {
     if (!ctx || !line) return -1;
     size_t n = strlen(line);
     int r = telnetty_send(ctx, (const uint8_t*)"#$#", 3);
@@ -1461,7 +1452,7 @@ static int telnetty__mcp_write_line(telnetty_context_t* ctx, const char* line) {
 
 /* Advertise mcp-negotiate itself (required by MCP 2.1) and every active
  * registered package at its own version, then `#$#mcp-negotiate-end`. */
-static void telnetty__mcp_send_negotiate_all(telnetty_context_t* ctx, telnetty_mcp_data_t* d) {
+static TELNETTY_UNUSED void telnetty__mcp_send_negotiate_all(telnetty_context_t* ctx, telnetty_mcp_data_t* d) {
     char buf[512];
     const char* key = telnetty__mcp_wire_key(ctx, d);
     int n = snprintf(buf, sizeof(buf),
@@ -1481,7 +1472,7 @@ static void telnetty__mcp_send_negotiate_all(telnetty_context_t* ctx, telnetty_m
 }
 
 /* Replace the session key (the key every later message must carry). */
-static void telnetty__mcp_set_session_key(telnetty_mcp_data_t* d, const char* key) {
+static TELNETTY_UNUSED void telnetty__mcp_set_session_key(telnetty_mcp_data_t* d, const char* key) {
     if (d->session_key && d->session_key != d->auth_key)
         TELNETTY_MCP_FREE(d->session_key);
     d->session_key = NULL;
@@ -1670,7 +1661,7 @@ static TELNETTY_UNUSED int telnetty_mcp_handle_line(telnetty_context_t* ctx, con
  * for this call, so anything we keep is copied into d->line_acc.
  *
  * line_mode: 0 = start of line, 1 = skip (not MCP), 2 = collecting. */
-static void telnetty__mcp_on_data(telnetty_context_t* ctx, const uint8_t* data, size_t len) {
+static TELNETTY_UNUSED void telnetty__mcp_on_data(telnetty_context_t* ctx, const uint8_t* data, size_t len) {
     telnetty_mcp_data_t* d = telnetty_mcp_of(ctx);
     if (!d || d->disabled || !data || len == 0) return;
 
@@ -1737,7 +1728,7 @@ static void telnetty__mcp_on_data(telnetty_context_t* ctx, const uint8_t* data, 
 
 /* Shallow copies: the string pointers stay owned by the context and are
  * valid until the package is unregistered or the context destroyed. */
-static size_t telnetty_mcp_get_packages(
+static TELNETTY_UNUSED size_t telnetty_mcp_get_packages(
     telnetty_context_t* ctx,
     telnetty_mcp_package_t* packages,
     size_t max_packages
@@ -1760,7 +1751,7 @@ static TELNETTY_UNUSED int telnetty_mcp_generate_message_id(telnetty_context_t* 
     return ++d->last_message_id;
 }
 
-static int telnetty_mcp_parse_message(
+static TELNETTY_UNUSED int telnetty_mcp_parse_message(
     const uint8_t* data,
     size_t length,
     telnetty_mcp_message_t* message
@@ -1806,17 +1797,17 @@ static int telnetty_mcp_parse_message(
     
     /* Extract components */
     if (package_end > package_start) {
-        message->package = strndup((const char*)data + package_start, 
+        message->package = telnetty__mcp_strndup((const char*)data + package_start, 
                                    package_end - package_start);
     }
     
     if (message_end > message_start) {
-        message->message = strndup((const char*)data + message_start, 
+        message->message = telnetty__mcp_strndup((const char*)data + message_start, 
                                    message_end - message_start);
     }
     
     if (data_start > 0 && data_end > data_start) {
-        message->data = strndup((const char*)data + data_start, 
+        message->data = telnetty__mcp_strndup((const char*)data + data_start, 
                                 data_end - data_start);
     }
     
@@ -1825,7 +1816,7 @@ static int telnetty_mcp_parse_message(
     return 0;
 }
 
-static int telnetty_mcp_build_message(
+static TELNETTY_UNUSED int telnetty_mcp_build_message(
     const telnetty_mcp_message_t* message,
     uint8_t* buffer,
     size_t buffer_size
@@ -1922,65 +1913,48 @@ static TELNETTY_UNUSED int telnetty_mcp_register_builtin_packages(telnetty_conte
     return 0;
 }
 
-static void telnetty_mcp_core_handler(
+/* mcp and mcp-negotiate are handled by telnetty_mcp_handle_line itself;
+ * the others are application protocols (editing, redirection) that only
+ * the application can implement. Replace the handler and activate the
+ * package to use one. */
+static TELNETTY_UNUSED void telnetty_mcp_core_handler(
     telnetty_context_t* ctx,
     const char* package,
     const char* message,
     const char* data,
     void* user_data
 ) {
-    (void)data; (void)user_data;
-    if (!ctx || !package || !message) return;
-    
-    /* Handle core MCP messages */
-    if (strcmp(message, "mcp") == 0) {
-        /* Initial MCP negotiation */
-        /* Would handle version negotiation */
-    } else if (strcmp(message, "auth") == 0) {
-        /* Authentication handling */
-    }
+    (void)ctx; (void)package; (void)message; (void)data; (void)user_data;
 }
 
-static void telnetty_mcp_simpleedit_handler(
+static TELNETTY_UNUSED void telnetty_mcp_simpleedit_handler(
     telnetty_context_t* ctx,
     const char* package,
     const char* message,
     const char* data,
     void* user_data
 ) {
-    (void)data; (void)user_data;
-    if (!ctx || !package || !message) return;
-    
-    /* Handle SimpleEdit messages */
-    /* Would implement SimpleEdit protocol handling */
+    (void)ctx; (void)package; (void)message; (void)data; (void)user_data;
 }
 
-static void telnetty_mcp_redirect_handler(
+static TELNETTY_UNUSED void telnetty_mcp_redirect_handler(
     telnetty_context_t* ctx,
     const char* package,
     const char* message,
     const char* data,
     void* user_data
 ) {
-    (void)data; (void)user_data;
-    if (!ctx || !package || !message) return;
-    
-    /* Handle Redirect messages */
-    /* Would implement redirect protocol handling */
+    (void)ctx; (void)package; (void)message; (void)data; (void)user_data;
 }
 
-static void telnetty_mcp_dns_handler(
+static TELNETTY_UNUSED void telnetty_mcp_dns_handler(
     telnetty_context_t* ctx,
     const char* package,
     const char* message,
     const char* data,
     void* user_data
 ) {
-    (void)data; (void)user_data;
-    if (!ctx || !package || !message) return;
-    
-    /* Handle DNS messages */
-    /* Would implement DNS resolution protocol */
+    (void)ctx; (void)package; (void)message; (void)data; (void)user_data;
 }
 
 #endif /* TELNETTY_MCP_IMPLEMENTATION */

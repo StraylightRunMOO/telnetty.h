@@ -188,6 +188,7 @@ static void test_event_queue_basic(void) {
     
     /* Pop the event */
     telnetty_event_entry_t entry;
+    memset(&entry, 0, sizeof(entry));
     result = telnetty_event_queue_pop(queue, &entry);
     TEST_ASSERT_EQUAL(1, result, "Pop event from queue");
     TEST_ASSERT_EQUAL(TELNETTY_EVENT_DATA, entry.type, "Popped event type");

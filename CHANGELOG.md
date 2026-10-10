@@ -4,9 +4,25 @@ All notable changes to Telnetty are documented in this file.
 
 ## [1.2.0] — Unreleased
 
-Focus: more MUD protocols, safer byte handling, and tests for the awkward
-cases. Most changes add APIs; the TELOPT 200 correction below is the one
-wire-level compatibility change.
+Focus: more MUD protocols, working compression in both directions, safer
+byte handling, headers that build cleanly in other people's projects, and
+tests for the awkward cases.
+
+### Upgrading from 1.1
+
+Most changes add APIs. These change behavior on the wire or at build time:
+
+- `TELNETTY_TELOPT_MCP` moved from 200 to 207. 200 is ATCP.
+- MCCP3 is now real. A server that calls `telnetty_enable_mccp3` inflates
+  client input inside `telnetty_process()`. Callers of
+  `telnetty_process_inbound()` need no change.
+- MCP 2.1 follows the spec's handshake and ignores messages without the
+  session key. The placeholder builtin packages are inactive.
+- GMCP `Core.Hello` is sent by the client side only.
+- NEW-ENVIRON frames start with the RFC 1572 `IS` byte.
+- A file that includes a header without its implementation macro now sees
+  types and constants only. Calling a function from such a file was never
+  linkable; it is now a compile-time error.
 
 ### Added — protocol surface
 
@@ -157,6 +173,76 @@ wire-level compatibility change.
   translation units that include the header without the implementation.
 - The core hook pointers are `static`, so two translation units can both
   define `TELNETTY_IMPLEMENTATION` without duplicate-symbol link errors.
+
+### Changed — headers are clean for downstream builds
+
+- A program that includes the headers with `-Wall -Wextra -Wpedantic` gets
+  no warnings. Every header-defined function is marked `TELNETTY_UNUSED`;
+  before, a typical program saw about 80 unused-function warnings.
+- The headers compile as strict ISO C99/C11/C17 with no POSIX feature
+  macros. Internal `strdup` / `strndup` calls became allocator-aware
+  helpers, so strings are now allocated with the same overridable
+  `*_MALLOC` macro that frees them. `posix_memalign` was replaced too (see
+  below).
+- The headers build as C++11 and later (four implicit `void*` / enum
+  conversions fixed).
+- Function prototypes are declared only when the module's implementation
+  macro is defined. A file that includes a header without the macro sees
+  types and constants only, and no longer gets a "declared static but never
+  defined" warning for every function.
+
+### Fixed — 1.2.0 polish
+
+- Negotiation timeouts for options offered before the first
+  `telnetty_tick()` (the usual connection setup) were measured from 0, so
+  the first tick with a real monotonic clock timed every one of them out.
+  Such options now start their timeout at the first tick.
+- MSP and MXP need the extended-event implementation. Without
+  `TELNETTY_EVENTS_IMPLEMENTATION` they called a function that was never
+  defined; their enable calls now return `-1` instead. MSP also no longer
+  ignores a failed handler registration.
+- `TELNETTY_BUFFER_ALLOC_ALIGNED` on Windows released `_aligned_malloc`
+  memory with `free()`. Aligned buffers now use C11 `aligned_alloc` where
+  available and `malloc` otherwise; both are released with `free()`. The
+  unused `<pthread.h>` / `<windows.h>` includes are gone.
+- `telnetty_msdp_send_variable` was declared but never defined; the
+  declaration is removed.
+- `telnetty_process_events` and `telnetty_event_create_connect` document
+  what they actually do (a compatibility no-op; the port is not carried).
+
+### Changed — build and packaging
+
+- The version is read from `telnetty_core.h`, so CMake and the header
+  always agree.
+- `telnetty::telnetty` now carries `TELNETTY_HAVE_ZLIB` and links
+  `ZLIB::ZLIB`. Before, consumers got the zlib link but not the define, so
+  compression silently compiled out of their code.
+- `find_package(telnetty)` works: the install now ships
+  `telnetty-config.cmake` and a version file. `add_subdirectory` and
+  FetchContent work too, and examples build only when Telnetty is the
+  top-level project.
+- Builds no longer force `-O3 -DNDEBUG` or define `_POSIX_C_SOURCE` and
+  `-Wno-unused-function` globally. The default build type is Release, and
+  warnings and POSIX macros are set per target.
+- The Doxygen target is behind `BUILD_DOCS` and no longer needs the missing
+  `Doxyfile.in`. Before, configure failed on any machine with doxygen
+  installed.
+- GitHub Actions CI: gcc and clang, zlib on and off, ASan/UBSan, macOS.
+
+### Changed — examples
+
+- `server_simple`, `client_simple`, and `server_libuv` are rewritten. None
+  of them used to write Telnetty's output to the socket, so clients received
+  nothing. The libuv server also touched handles across threads and could
+  crash on shutdown.
+  - `server_simple`: a `poll()` chat server showing line input, NAWS/TTYPE,
+    MCCP2/MCCP3, color, partial writes, and timeouts.
+  - `client_simple`: a line-mode client that answers TTYPE/NAWS and accepts
+    MCCP2/MCCP3.
+  - `server_libuv`: a correct single-loop echo server.
+- The new `tests/e2e_examples.py` runs the examples over real sockets
+  against a scripted client that negotiates MCCP2 and MCCP3 the way
+  TinTin++ does.
 
 ### Added — test infrastructure
 

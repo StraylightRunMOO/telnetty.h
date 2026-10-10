@@ -13,7 +13,7 @@
  * - Memory-efficient operations
  * 
  * @author Damus <damus@straylightrun.org>
- * @version 1.0.0
+ * @version 1.2.0
  * 
  */
 
@@ -126,6 +126,7 @@ typedef struct {
  * Buffer Pool API
  * ============================================================================ */
 
+#ifdef TELNETTY_BUFFER_IMPLEMENTATION
 /**
  * Create a buffer pool
  * 
@@ -134,7 +135,7 @@ typedef struct {
  * @param flags Pool configuration flags
  * @return New buffer pool or NULL on failure
  */
-static telnetty_buffer_pool_t* telnetty_buffer_pool_create(
+static TELNETTY_UNUSED telnetty_buffer_pool_t* telnetty_buffer_pool_create(
     size_t capacity,
     size_t buffer_size,
     int flags
@@ -171,7 +172,7 @@ static TELNETTY_UNUSED int telnetty_buffer_pool_put(telnetty_buffer_pool_t* pool
  * @param stats Output statistics
  * @return 0 on success, -1 on failure
  */
-static int telnetty_buffer_pool_get_stats(
+static TELNETTY_UNUSED int telnetty_buffer_pool_get_stats(
     telnetty_buffer_pool_t* pool,
     telnetty_buffer_stats_t* stats
 );
@@ -201,7 +202,7 @@ static TELNETTY_UNUSED void telnetty_buffer_chain_destroy(telnetty_buffer_chain_
  * @param buffer Buffer to append
  * @return 0 on success, -1 on failure
  */
-static int telnetty_buffer_chain_append(
+static TELNETTY_UNUSED int telnetty_buffer_chain_append(
     telnetty_buffer_chain_t* chain,
     telnetty_buffer_t* buffer
 );
@@ -213,7 +214,7 @@ static int telnetty_buffer_chain_append(
  * @param buffer Buffer to prepend
  * @return 0 on success, -1 on failure
  */
-static int telnetty_buffer_chain_prepend(
+static TELNETTY_UNUSED int telnetty_buffer_chain_prepend(
     telnetty_buffer_chain_t* chain,
     telnetty_buffer_t* buffer
 );
@@ -233,7 +234,7 @@ static TELNETTY_UNUSED size_t telnetty_buffer_chain_length(telnetty_buffer_chain
  * @param pool Optional buffer pool for allocation
  * @return Flattened buffer or NULL on failure
  */
-static telnetty_buffer_t* telnetty_buffer_chain_flatten(
+static TELNETTY_UNUSED telnetty_buffer_t* telnetty_buffer_chain_flatten(
     telnetty_buffer_chain_t* chain,
     telnetty_buffer_pool_t* pool
 );
@@ -246,7 +247,7 @@ static telnetty_buffer_t* telnetty_buffer_chain_flatten(
  * @param length Length of view (0 for all)
  * @return Buffer chain view or NULL on failure
  */
-static telnetty_buffer_chain_t* telnetty_buffer_chain_view(
+static TELNETTY_UNUSED telnetty_buffer_chain_t* telnetty_buffer_chain_view(
     telnetty_buffer_chain_t* chain,
     size_t offset,
     size_t length
@@ -259,7 +260,7 @@ static telnetty_buffer_chain_t* telnetty_buffer_chain_view(
  * @param position Position to split at
  * @return New chain with remaining data or NULL on failure
  */
-static telnetty_buffer_chain_t* telnetty_buffer_chain_split(
+static TELNETTY_UNUSED telnetty_buffer_chain_t* telnetty_buffer_chain_split(
     telnetty_buffer_chain_t* chain,
     size_t position
 );
@@ -276,7 +277,7 @@ static telnetty_buffer_chain_t* telnetty_buffer_chain_split(
  * @param pool Optional buffer pool
  * @return New buffer or NULL on failure
  */
-static telnetty_buffer_t* telnetty_buffer_create_ex(
+static TELNETTY_UNUSED telnetty_buffer_t* telnetty_buffer_create_ex(
     size_t size,
     telnetty_buffer_alloc_t alloc,
     telnetty_buffer_pool_t* pool
@@ -290,7 +291,7 @@ static telnetty_buffer_t* telnetty_buffer_create_ex(
  * @param flags Buffer flags
  * @return New buffer or NULL on failure
  */
-static telnetty_buffer_t* telnetty_buffer_create_reference(
+static TELNETTY_UNUSED telnetty_buffer_t* telnetty_buffer_create_reference(
     uint8_t* data,
     size_t size,
     int flags
@@ -303,7 +304,7 @@ static telnetty_buffer_t* telnetty_buffer_create_reference(
  * @param minimum_size Minimum required size
  * @return 0 on success, -1 on failure
  */
-static int telnetty_buffer_ensure_capacity(
+static TELNETTY_UNUSED int telnetty_buffer_ensure_capacity(
     telnetty_buffer_t* buffer,
     size_t minimum_size
 );
@@ -325,7 +326,7 @@ static TELNETTY_UNUSED int telnetty_buffer_compact(telnetty_buffer_t* buffer);
  * @param length Length to copy
  * @return Number of bytes copied or -1 on failure
  */
-static int telnetty_buffer_copy(
+static TELNETTY_UNUSED int telnetty_buffer_copy(
     const telnetty_buffer_t* buffer,
     size_t offset,
     uint8_t* dest,
@@ -341,7 +342,7 @@ static int telnetty_buffer_copy(
  * @param start_offset Starting offset for search
  * @return Position of data or -1 if not found
  */
-static int telnetty_buffer_find(
+static TELNETTY_UNUSED int telnetty_buffer_find(
     const telnetty_buffer_t* buffer,
     const uint8_t* data,
     size_t data_length,
@@ -355,7 +356,7 @@ static int telnetty_buffer_find(
  * @param buffer2 Second buffer
  * @return 0 if equal, non-zero otherwise
  */
-static int telnetty_buffer_compare(
+static TELNETTY_UNUSED int telnetty_buffer_compare(
     const telnetty_buffer_t* buffer1,
     const telnetty_buffer_t* buffer2
 );
@@ -367,7 +368,7 @@ static int telnetty_buffer_compare(
  * @param pool Optional buffer pool for allocation
  * @return Cloned buffer or NULL on failure
  */
-static telnetty_buffer_t* telnetty_buffer_clone(
+static TELNETTY_UNUSED telnetty_buffer_t* telnetty_buffer_clone(
     const telnetty_buffer_t* buffer,
     telnetty_buffer_pool_t* pool
 );
@@ -381,7 +382,7 @@ static telnetty_buffer_t* telnetty_buffer_clone(
  * @param length Length to append (0 for all)
  * @return Number of bytes appended or -1 on failure
  */
-static int telnetty_buffer_append_buffer(
+static TELNETTY_UNUSED int telnetty_buffer_append_buffer(
     telnetty_buffer_t* dest,
     const telnetty_buffer_t* src,
     size_t offset,
@@ -411,7 +412,7 @@ static TELNETTY_UNUSED void telnetty_buffer_reset_global_stats(void);
  * @param stats Statistics to print
  * @param prefix Optional prefix for output
  */
-static void telnetty_buffer_print_stats(
+static TELNETTY_UNUSED void telnetty_buffer_print_stats(
     const telnetty_buffer_stats_t* stats,
     const char* prefix
 );
@@ -431,6 +432,7 @@ static TELNETTY_UNUSED bool telnetty_buffer_validate(const telnetty_buffer_t* bu
  * @return true if chain is valid, false otherwise
  */
 static TELNETTY_UNUSED bool telnetty_buffer_chain_validate(const telnetty_buffer_chain_t* chain);
+#endif /* TELNETTY_BUFFER_IMPLEMENTATION */
 
 /* ============================================================================
  * Inline Helper Functions
@@ -530,12 +532,6 @@ static inline TELNETTY_UNUSED size_t telnetty_buffer_chain_count(const telnetty_
 #include <string.h>
 #include <errno.h>
 
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <pthread.h>
-#endif
-
 /* Memory allocation wrappers */
 #ifndef TELNETTY_BUFFER_MALLOC
 #define TELNETTY_BUFFER_MALLOC(size) malloc(size)
@@ -550,13 +546,13 @@ static inline TELNETTY_UNUSED size_t telnetty_buffer_chain_count(const telnetty_
 #endif
 
 /* Global statistics */
-static telnetty_buffer_stats_t g_buffer_stats = {0};
+static TELNETTY_UNUSED telnetty_buffer_stats_t g_buffer_stats; /* zero-initialized (static storage) */
 
 /* ============================================================================
  * Buffer Pool Implementation
  * ============================================================================ */
 
-static telnetty_buffer_pool_t* telnetty_buffer_pool_create(
+static TELNETTY_UNUSED telnetty_buffer_pool_t* telnetty_buffer_pool_create(
     size_t capacity,
     size_t buffer_size,
     int flags
@@ -646,7 +642,7 @@ static TELNETTY_UNUSED int telnetty_buffer_pool_put(telnetty_buffer_pool_t* pool
     return 0;
 }
 
-static int telnetty_buffer_pool_get_stats(
+static TELNETTY_UNUSED int telnetty_buffer_pool_get_stats(
     telnetty_buffer_pool_t* pool,
     telnetty_buffer_stats_t* stats
 ) {
@@ -693,7 +689,7 @@ static TELNETTY_UNUSED void telnetty_buffer_chain_destroy(telnetty_buffer_chain_
     g_buffer_stats.chains_destroyed++;
 }
 
-static int telnetty_buffer_chain_append(
+static TELNETTY_UNUSED int telnetty_buffer_chain_append(
     telnetty_buffer_chain_t* chain,
     telnetty_buffer_t* buffer
 ) {
@@ -720,7 +716,7 @@ static int telnetty_buffer_chain_append(
     return 0;
 }
 
-static int telnetty_buffer_chain_prepend(
+static TELNETTY_UNUSED int telnetty_buffer_chain_prepend(
     telnetty_buffer_chain_t* chain,
     telnetty_buffer_t* buffer
 ) {
@@ -747,7 +743,7 @@ static TELNETTY_UNUSED size_t telnetty_buffer_chain_length(telnetty_buffer_chain
     return chain ? chain->total_length : 0;
 }
 
-static telnetty_buffer_t* telnetty_buffer_chain_flatten(
+static TELNETTY_UNUSED telnetty_buffer_t* telnetty_buffer_chain_flatten(
     telnetty_buffer_chain_t* chain,
     telnetty_buffer_pool_t* pool
 ) {
@@ -780,7 +776,7 @@ static telnetty_buffer_t* telnetty_buffer_chain_flatten(
     return flat_buffer;
 }
 
-static telnetty_buffer_chain_t* telnetty_buffer_chain_view(
+static TELNETTY_UNUSED telnetty_buffer_chain_t* telnetty_buffer_chain_view(
     telnetty_buffer_chain_t* chain,
     size_t offset,
     size_t length
@@ -840,7 +836,7 @@ static telnetty_buffer_chain_t* telnetty_buffer_chain_view(
     return view;
 }
 
-static telnetty_buffer_chain_t* telnetty_buffer_chain_split(
+static TELNETTY_UNUSED telnetty_buffer_chain_t* telnetty_buffer_chain_split(
     telnetty_buffer_chain_t* chain,
     size_t position
 ) {
@@ -933,7 +929,7 @@ static telnetty_buffer_chain_t* telnetty_buffer_chain_split(
  * Advanced Buffer Operations Implementation
  * ============================================================================ */
 
-static telnetty_buffer_t* telnetty_buffer_create_ex(
+static TELNETTY_UNUSED telnetty_buffer_t* telnetty_buffer_create_ex(
     size_t size,
     telnetty_buffer_alloc_t alloc,
     telnetty_buffer_pool_t* pool
@@ -979,13 +975,21 @@ static telnetty_buffer_t* telnetty_buffer_create_ex(
             if (!buffer) return NULL;
             
             /* Allocate aligned data buffer */
+            /* The data is released with free() like every other dynamic
+             * buffer, so only allocators whose memory free() accepts are
+             * usable: C11 aligned_alloc (size rounded up to a multiple of
+             * the alignment), else plain malloc's natural alignment. This
+             * replaces posix_memalign (not C99) and _aligned_malloc, whose
+             * memory must not be passed to free(). */
             void* aligned_data = NULL;
-#ifdef _WIN32
-            aligned_data = _aligned_malloc(size, TELNETTY_BUFFER_ALIGN);
-#else
-            if (posix_memalign(&aligned_data, TELNETTY_BUFFER_ALIGN, size) != 0) {
-                aligned_data = NULL;
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(_WIN32)
+            {
+                size_t rounded = (size + TELNETTY_BUFFER_ALIGN - 1)
+                               / TELNETTY_BUFFER_ALIGN * TELNETTY_BUFFER_ALIGN;
+                aligned_data = aligned_alloc(TELNETTY_BUFFER_ALIGN, rounded);
             }
+#else
+            aligned_data = malloc(size);
 #endif
             
             if (!aligned_data) {
@@ -1010,7 +1014,7 @@ static telnetty_buffer_t* telnetty_buffer_create_ex(
     return buffer;
 }
 
-static telnetty_buffer_t* telnetty_buffer_create_reference(
+static TELNETTY_UNUSED telnetty_buffer_t* telnetty_buffer_create_reference(
     uint8_t* data,
     size_t size,
     int flags
@@ -1028,7 +1032,7 @@ static telnetty_buffer_t* telnetty_buffer_create_reference(
     return buffer;
 }
 
-static int telnetty_buffer_ensure_capacity(
+static TELNETTY_UNUSED int telnetty_buffer_ensure_capacity(
     telnetty_buffer_t* buffer,
     size_t minimum_size
 ) {
@@ -1071,7 +1075,7 @@ static TELNETTY_UNUSED int telnetty_buffer_compact(telnetty_buffer_t* buffer) {
     return 0;
 }
 
-static int telnetty_buffer_copy(
+static TELNETTY_UNUSED int telnetty_buffer_copy(
     const telnetty_buffer_t* buffer,
     size_t offset,
     uint8_t* dest,
@@ -1089,7 +1093,7 @@ static int telnetty_buffer_copy(
     return (int)to_copy;
 }
 
-static int telnetty_buffer_find(
+static TELNETTY_UNUSED int telnetty_buffer_find(
     const telnetty_buffer_t* buffer,
     const uint8_t* data,
     size_t data_length,
@@ -1123,7 +1127,7 @@ static int telnetty_buffer_find(
     return -1;
 }
 
-static int telnetty_buffer_compare(
+static TELNETTY_UNUSED int telnetty_buffer_compare(
     const telnetty_buffer_t* buffer1,
     const telnetty_buffer_t* buffer2
 ) {
@@ -1139,7 +1143,7 @@ static int telnetty_buffer_compare(
     return memcmp(buffer1->data, buffer2->data, len1);
 }
 
-static telnetty_buffer_t* telnetty_buffer_clone(
+static TELNETTY_UNUSED telnetty_buffer_t* telnetty_buffer_clone(
     const telnetty_buffer_t* buffer,
     telnetty_buffer_pool_t* pool
 ) {
@@ -1160,7 +1164,7 @@ static telnetty_buffer_t* telnetty_buffer_clone(
     return clone;
 }
 
-static int telnetty_buffer_append_buffer(
+static TELNETTY_UNUSED int telnetty_buffer_append_buffer(
     telnetty_buffer_t* dest,
     const telnetty_buffer_t* src,
     size_t offset,
@@ -1201,7 +1205,7 @@ static TELNETTY_UNUSED void telnetty_buffer_reset_global_stats(void) {
     memset(&g_buffer_stats, 0, sizeof(telnetty_buffer_stats_t));
 }
 
-static void telnetty_buffer_print_stats(
+static TELNETTY_UNUSED void telnetty_buffer_print_stats(
     const telnetty_buffer_stats_t* stats,
     const char* prefix
 ) {

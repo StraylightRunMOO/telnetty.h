@@ -13,7 +13,7 @@
  * - Performance optimized parsing
  * 
  * @author Damus <damus@straylightrun.org>
- * @version 1.0.0
+ * @version 1.2.0
  * 
  */
 
@@ -77,9 +77,9 @@ extern "C" {
  * ============================================================================ */
 
 #define TELNETTY_VERSION_MAJOR  1
-#define TELNETTY_VERSION_MINOR  1
+#define TELNETTY_VERSION_MINOR  2
 #define TELNETTY_VERSION_PATCH  0
-#define TELNETTY_VERSION_STRING "1.1.0"
+#define TELNETTY_VERSION_STRING "1.2.0"
 #define TELNETTY_VERSION_HEX \
     ((TELNETTY_VERSION_MAJOR << 16) | (TELNETTY_VERSION_MINOR << 8) | TELNETTY_VERSION_PATCH)
 
@@ -509,6 +509,7 @@ struct telnetty_context {
  * Core API Functions
  * ============================================================================ */
 
+#ifdef TELNETTY_IMPLEMENTATION
 /**
  * Create a new TELNET context
  * 
@@ -516,7 +517,7 @@ struct telnetty_context {
  * @param user_data User data passed to callbacks
  * @return New TELNET context or NULL on failure
  */
-static telnetty_context_t* telnetty_create(
+static TELNETTY_UNUSED telnetty_context_t* telnetty_create(
     telnetty_event_callback_t event_cb,
     void* user_data
 );
@@ -536,7 +537,7 @@ static TELNETTY_UNUSED void telnetty_destroy(telnetty_context_t* ctx);
  * @param length Length of input data
  * @return Number of bytes processed or -1 on error
  */
-static int telnetty_process(
+static TELNETTY_UNUSED int telnetty_process(
     telnetty_context_t* ctx,
     const uint8_t* data,
     size_t length
@@ -550,7 +551,7 @@ static int telnetty_process(
  * @param length Length of data
  * @return Number of bytes queued or -1 on error
  */
-static int telnetty_send(
+static TELNETTY_UNUSED int telnetty_send(
     telnetty_context_t* ctx,
     const uint8_t* data,
     size_t length
@@ -563,7 +564,7 @@ static int telnetty_send(
  * @param command Command to send
  * @return 0 on success or -1 on error
  */
-static int telnetty_send_command(
+static TELNETTY_UNUSED int telnetty_send_command(
     telnetty_context_t* ctx,
     uint8_t command
 );
@@ -579,7 +580,7 @@ static int telnetty_send_command(
  * @param option Option code
  * @return 0 on success or -1 on error
  */
-static int telnetty_send_option(
+static TELNETTY_UNUSED int telnetty_send_option(
     telnetty_context_t* ctx,
     uint8_t command,
     uint8_t option
@@ -592,7 +593,7 @@ static int telnetty_send_option(
  *
  * @return 0 on success or -1 on error
  */
-static int telnetty_set_option_support(
+static TELNETTY_UNUSED int telnetty_set_option_support(
     telnetty_context_t* ctx,
     uint8_t option,
     int support_us,
@@ -602,7 +603,7 @@ static int telnetty_set_option_support(
 /**
  * Ensure an option slot exists (creates with Q_NO/Q_NO if missing).
  */
-static telnetty_option_t* telnetty_ensure_option(
+static TELNETTY_UNUSED telnetty_option_t* telnetty_ensure_option(
     telnetty_context_t* ctx,
     uint8_t option
 );
@@ -616,7 +617,7 @@ static telnetty_option_t* telnetty_ensure_option(
  * @param length Data length
  * @return 0 on success or -1 on error
  */
-static int telnetty_send_subnegotiation(
+static TELNETTY_UNUSED int telnetty_send_subnegotiation(
     telnetty_context_t* ctx,
     uint8_t option,
     const uint8_t* data,
@@ -630,7 +631,7 @@ static int telnetty_send_subnegotiation(
  *
  * @return 0 on success or -1 on error
  */
-static int telnetty_register_option(
+static TELNETTY_UNUSED int telnetty_register_option(
     telnetty_context_t* ctx,
     uint8_t option,
     telnetty_option_handler_t handler,
@@ -641,7 +642,7 @@ static int telnetty_register_option(
  * Register a subnegotiation handler for an option (payload excludes the
  * option byte).
  */
-static int telnetty_register_sb_handler(
+static TELNETTY_UNUSED int telnetty_register_sb_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     telnetty_sb_handler_t handler,
@@ -706,10 +707,11 @@ static TELNETTY_UNUSED int telnetty_default_option_policy(
  * @param stats Output statistics structure
  * @return 0 on success or -1 on error
  */
-static int telnetty_get_stats(
+static TELNETTY_UNUSED int telnetty_get_stats(
     telnetty_context_t* ctx,
     telnetty_stats_t* stats
 );
+#endif /* TELNETTY_IMPLEMENTATION */
 
 /* ============================================================================
  * Inline Helper Functions
@@ -747,15 +749,15 @@ static inline TELNETTY_UNUSED uint8_t telnetty_get_option_state(telnetty_context
  * without duplicate-symbol link errors. */
 
 /* Extended-event dispatcher, installed by telnetty_events.h. */
-static void (*telnetty__extended_dispatch_hook)(
+static TELNETTY_UNUSED void (*telnetty__extended_dispatch_hook)(
     telnetty_context_t*, telnetty_event_type_t, const telnetty_event_data_union_t*);
 
 /* Frees ctx->event_handlers on destroy, installed by telnetty_events.h. */
-static void (*telnetty__event_handlers_free_hook)(void*);
+static TELNETTY_UNUSED void (*telnetty__event_handlers_free_hook)(void*);
 
 /* MCP 2.1 line observer, installed by telnetty_mcp.h so decoded data
  * bytes can be assembled into #$# lines. */
-static void (*telnetty__mcp_data_hook)(
+static TELNETTY_UNUSED void (*telnetty__mcp_data_hook)(
     telnetty_context_t*, const uint8_t*, size_t);
 
 /**
@@ -798,6 +800,7 @@ static inline TELNETTY_UNUSED void telnetty_set_log_callback(
     ctx->log_threshold = level;
 }
 
+#ifdef TELNETTY_IMPLEMENTATION
 /** Emit a formatted log line. Silently discards when no sink is set or the
  *  level falls below the threshold — the format string is only rendered when
  *  the sink will actually receive it. */
@@ -808,6 +811,7 @@ static TELNETTY_UNUSED void telnetty_log(
     const char* fmt,
     ...
 );
+#endif /* TELNETTY_IMPLEMENTATION */
 
 /**
  * Set the negotiation timeout in milliseconds. Zero (the default) disables
@@ -822,6 +826,7 @@ static inline TELNETTY_UNUSED void telnetty_set_negotiation_timeout(
     if (ctx) ctx->negotiation_timeout_ms = ms;
 }
 
+#ifdef TELNETTY_IMPLEMENTATION
 /**
  * Advance the context's monotonic clock. Callers drive this from their
  * event loop (libuv timer, poll deadline, whatever). Options whose
@@ -833,6 +838,7 @@ static TELNETTY_UNUSED void telnetty_tick(
     telnetty_context_t* ctx,
     uint64_t now_ms
 );
+#endif /* TELNETTY_IMPLEMENTATION */
 
 /**
  * Configure inbound rate limits. `bytes_per_sec` caps total bytes fed
@@ -907,13 +913,29 @@ static TELNETTY_UNUSED void telnetty_log(
 
 static inline void telnetty__rate_refill(telnetty_context_t* ctx);
 
+/* True while either side of the option is mid-negotiation (WANT*). */
+static inline bool telnetty__option_pending(const telnetty_option_t* opt) {
+    uint8_t us = opt->us, him = opt->him;
+    return us  == TELNETTY_Q_WANTYES || us  == TELNETTY_Q_WANTNO ||
+           us  == TELNETTY_Q_WANTYES_OP || us  == TELNETTY_Q_WANTNO_OP ||
+           him == TELNETTY_Q_WANTYES || him == TELNETTY_Q_WANTNO ||
+           him == TELNETTY_Q_WANTYES_OP || him == TELNETTY_Q_WANTNO_OP;
+}
+
 static TELNETTY_UNUSED void telnetty_tick(telnetty_context_t* ctx, uint64_t now_ms) {
     if (!ctx) return;
     ctx->now_ms = now_ms;
     telnetty__rate_refill(ctx);
     for (int i = 0; i < 256; i++) {
         telnetty_option_t* opt = ctx->options[i];
-        if (!opt || !opt->deadline_ms) continue;
+        if (!opt) continue;
+        if (!opt->deadline_ms) {
+            /* Initiated before the clock was known (send_option ran before
+             * the first tick): start its timeout now. */
+            if (ctx->negotiation_timeout_ms && telnetty__option_pending(opt))
+                opt->deadline_ms = now_ms + (uint64_t)ctx->negotiation_timeout_ms;
+            continue;
+        }
         if (now_ms < opt->deadline_ms) continue;
 
         /* Timed out. Drop back to Q_NO on any pending side so the caller
@@ -1077,7 +1099,7 @@ static TELNETTY_UNUSED telnetty_option_t* telnetty_option_create(uint8_t option)
 }
 
 /* Ensure option slot exists on the context. */
-static telnetty_option_t* telnetty_ensure_option(
+static TELNETTY_UNUSED telnetty_option_t* telnetty_ensure_option(
     telnetty_context_t* ctx,
     uint8_t option
 ) {
@@ -1099,7 +1121,7 @@ static inline void telnetty__out_sync(telnetty_context_t* ctx) {
  * other legitimate out_buffer writers are the out_hook itself and the
  * uncompressed MCCP2 start marker written just before the hook goes in.
  * Define TELNETTY_DEBUG_OUT_HOOK to assert that nothing else did. */
-static int telnetty_out_write(telnetty_context_t* ctx, const uint8_t* data, size_t len) {
+static TELNETTY_UNUSED int telnetty_out_write(telnetty_context_t* ctx, const uint8_t* data, size_t len) {
     if (!ctx || !data || len == 0) return 0;
 #ifdef TELNETTY_DEBUG_OUT_HOOK
     /* Not assert(): release builds define NDEBUG and would drop the check. */
@@ -1140,7 +1162,7 @@ static TELNETTY_UNUSED void telnetty_set_input_hook(
 }
 
 /* Forward decl for use in process_inbound. */
-static int telnetty_process(telnetty_context_t* ctx,
+static TELNETTY_UNUSED int telnetty_process(telnetty_context_t* ctx,
                             const uint8_t* TELNETTY_RESTRICT data,
                             size_t length);
 
@@ -1171,7 +1193,7 @@ static TELNETTY_UNUSED int telnetty_default_option_policy(
 }
 
 /* Raw 3-byte IAC command (bypasses Q-method — for internal use only). */
-static void telnetty_send_negotiate_raw(
+static TELNETTY_UNUSED void telnetty_send_negotiate_raw(
     telnetty_context_t* ctx,
     uint8_t command,
     uint8_t option
@@ -1183,7 +1205,7 @@ static void telnetty_send_negotiate_raw(
     ctx->stats.commands_sent++;
 }
 
-static int telnetty_set_option_support(
+static TELNETTY_UNUSED int telnetty_set_option_support(
     telnetty_context_t* ctx,
     uint8_t option,
     int support_us,
@@ -1229,7 +1251,7 @@ static TELNETTY_UNUSED void telnetty_option_set_user_data(
  * Core API Implementation
  * ============================================================================ */
 
-static telnetty_context_t* telnetty_create(
+static TELNETTY_UNUSED telnetty_context_t* telnetty_create(
     telnetty_event_callback_t event_cb,
     void* user_data
 ) {
@@ -1266,7 +1288,7 @@ static telnetty_context_t* telnetty_create(
 /* Deliver a run of in-band bytes. The MCP hook, if installed, sees the
  * bytes before the DATA event and must copy anything it wants to keep:
  * `p` is only valid for the duration of the call. */
-static void telnetty__emit_data(telnetty_context_t* ctx, const uint8_t* p, size_t n) {
+static TELNETTY_UNUSED void telnetty__emit_data(telnetty_context_t* ctx, const uint8_t* p, size_t n) {
     if (!ctx || !p || n == 0) return;
     if (telnetty__mcp_data_hook)
         telnetty__mcp_data_hook(ctx, p, n);
@@ -1335,7 +1357,7 @@ static inline void telnetty__rate_refill(telnetty_context_t* ctx) {
 
 /* Hand wire bytes to the inbound hook. Wire bytes are counted here; the
  * nested parse of decoded bytes does not count them again. */
-static int telnetty__run_in_hook(
+static TELNETTY_UNUSED int telnetty__run_in_hook(
     telnetty_context_t* ctx,
     const uint8_t* data,
     size_t length
@@ -1349,13 +1371,13 @@ static int telnetty__run_in_hook(
     return (int)length;
 }
 
-static int telnetty__parse(
+static TELNETTY_UNUSED int telnetty__parse(
     telnetty_context_t* ctx,
     const uint8_t* TELNETTY_RESTRICT data,
     size_t length
 );
 
-static int telnetty_process(
+static TELNETTY_UNUSED int telnetty_process(
     telnetty_context_t* ctx,
     const uint8_t* TELNETTY_RESTRICT data,
     size_t length
@@ -1366,7 +1388,7 @@ static int telnetty_process(
     return telnetty__parse(ctx, data, length);
 }
 
-static int telnetty__parse(
+static TELNETTY_UNUSED int telnetty__parse(
     telnetty_context_t* ctx,
     const uint8_t* TELNETTY_RESTRICT data,
     size_t length
@@ -1788,7 +1810,7 @@ static TELNETTY_UNUSED int telnetty_process_byte(telnetty_context_t* ctx, uint8_
     return -1;
 }
 
-static int telnetty_send(
+static TELNETTY_UNUSED int telnetty_send(
     telnetty_context_t* ctx,
     const uint8_t* TELNETTY_RESTRICT data,
     size_t length
@@ -1852,7 +1874,7 @@ static TELNETTY_UNUSED int telnetty_send_command(telnetty_context_t* ctx, uint8_
 }
 
 /* RFC 1143 initiator — only emit IAC when state changes. */
-static int telnetty_send_option(
+static TELNETTY_UNUSED int telnetty_send_option(
     telnetty_context_t* ctx,
     uint8_t command,
     uint8_t option
@@ -1964,8 +1986,9 @@ static int telnetty_send_option(
 
     /* Stamp a deadline whenever either side is now mid-negotiation (WANT*)
      * and no deadline is set. Idempotent: an already-pending option keeps
-     * its earlier deadline until it settles. */
-    if (ctx->negotiation_timeout_ms && !opt->deadline_ms) {
+     * its earlier deadline until it settles. Before the first tick the
+     * clock is unknown, so telnetty_tick stamps those on its first call. */
+    if (ctx->negotiation_timeout_ms && !opt->deadline_ms && ctx->now_ms) {
         uint8_t us = opt->us, him = opt->him;
         int us_pending  = (us  == TELNETTY_Q_WANTYES || us  == TELNETTY_Q_WANTNO ||
                            us  == TELNETTY_Q_WANTYES_OP || us  == TELNETTY_Q_WANTNO_OP);
@@ -1979,7 +2002,7 @@ static int telnetty_send_option(
     return 0;
 }
 
-static int telnetty_send_subnegotiation(
+static TELNETTY_UNUSED int telnetty_send_subnegotiation(
     telnetty_context_t* ctx,
     uint8_t option,
     const uint8_t* data,
@@ -2009,7 +2032,7 @@ static int telnetty_send_subnegotiation(
     return 0;
 }
 
-static int telnetty_register_option(
+static TELNETTY_UNUSED int telnetty_register_option(
     telnetty_context_t* ctx,
     uint8_t option,
     telnetty_option_handler_t handler,
@@ -2030,7 +2053,7 @@ static int telnetty_register_option(
     return 0;
 }
 
-static int telnetty_register_sb_handler(
+static TELNETTY_UNUSED int telnetty_register_sb_handler(
     telnetty_context_t* ctx,
     uint8_t option,
     telnetty_sb_handler_t handler,
