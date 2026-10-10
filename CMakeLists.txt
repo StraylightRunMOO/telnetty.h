@@ -170,6 +170,15 @@ if(BUILD_TESTS)
         add_test(NAME ${test} COMMAND ${test})
     endforeach()
 
+    # A downstream define set (no explicit events implementation), built
+    # as strict C99 with warnings as errors.
+    telnetty_program(test_define_sets tests/test_define_sets.c)
+    set_target_properties(test_define_sets PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(test_define_sets PRIVATE -Werror)
+    endif()
+    add_test(NAME test_define_sets COMMAND test_define_sets)
+
     # MANIAC Markov fuzz. Skipped when the generated matrices header is
     # absent; regenerate it with `python3 tests/maniac_gen.py`.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/maniac_matrices.h")

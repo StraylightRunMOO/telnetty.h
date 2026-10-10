@@ -198,9 +198,11 @@ Most changes add APIs. These change behavior on the wire or at build time:
   the first tick with a real monotonic clock timed every one of them out.
   Such options now start their timeout at the first tick.
 - MSP and MXP need the extended-event implementation. Without
-  `TELNETTY_EVENTS_IMPLEMENTATION` they called a function that was never
-  defined; their enable calls now return `-1` instead. MSP also no longer
-  ignores a failed handler registration.
+  `TELNETTY_EVENTS_IMPLEMENTATION`, any program using them failed to link,
+  and every translation unit got a never-defined warning.
+  `TELNETTY_MUD_IMPLEMENTATION` now turns the events implementation on.
+  If `telnetty_events.h` was already included without it, the enable calls
+  return `-1`. MSP also no longer ignores a failed handler registration.
 - `TELNETTY_BUFFER_ALLOC_ALIGNED` on Windows released `_aligned_malloc`
   memory with `free()`. Aligned buffers now use C11 `aligned_alloc` where
   available and `malloc` otherwise; both are released with `free()`. The

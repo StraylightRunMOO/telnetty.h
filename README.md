@@ -27,9 +27,9 @@ CONTROL, NEW-ENVIRON, CHARSET, and END-OF-RECORD.
 | GMCP | JSON package messages | Payload JSON is the caller's responsibility |
 | MTTS | Terminal capability reporting | Includes the three-cycle TTYPE exchange |
 | MSSP | Server status values | |
-| MXP | Inline tag tokenization | Reports tags; does not render or sanitize them; needs the events module |
+| MXP | Inline tag tokenization | Reports tags; does not render or sanitize them |
 | ZMP | NUL-delimited commands and arguments | Subnegotiation payloads |
-| MSP | Inline sound and music triggers | Reports triggers; needs the events module |
+| MSP | Inline sound and music triggers | Reports triggers to the application |
 | ATCP | Package and message subnegotiation | Uses TELNET option 200 |
 | MCCP2 / MCCP3 | MUD compression, both directions | Server and client sides; requires zlib |
 | MCCP1 | Legacy option negotiation | Negotiation only; no built-in inflate path |
@@ -158,9 +158,11 @@ Choose the modules you need. This example includes the common set.
 
 The implementation macros must appear before the includes. If you do not use
 a module, leave out its macro and header. Module dependencies: everything
-needs the core; the MSP and MXP parts of `telnetty_mud.h` also need
-`TELNETTY_EVENTS_IMPLEMENTATION` (their enable calls return `-1` without
-it).
+needs the core, and `TELNETTY_MUD_IMPLEMENTATION` turns on
+`TELNETTY_EVENTS_IMPLEMENTATION` for MSP and MXP. That only works when the
+macros come before every include; if `telnetty_events.h` was already
+included without its macro, `telnetty_enable_msp` and `telnetty_enable_mxp`
+return `-1`.
 
 Every function is `static`, so each translation unit that calls Telnetty
 defines the implementation macros it needs and gets its own private copy;

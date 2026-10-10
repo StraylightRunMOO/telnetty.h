@@ -19,6 +19,15 @@
 #ifndef TELNETTY_EVENTS_H
 #define TELNETTY_EVENTS_H
 
+/* The MUD implementation runs MSP and MXP as extended-event DATA handlers,
+ * so it turns this implementation on too. Define the implementation macros
+ * before including any telnetty header (as the README shows); if
+ * TELNETTY_MUD_IMPLEMENTATION only appears after this header was included,
+ * telnetty_enable_msp / telnetty_enable_mxp return -1. */
+#if defined(TELNETTY_MUD_IMPLEMENTATION) && !defined(TELNETTY_EVENTS_IMPLEMENTATION)
+#define TELNETTY_EVENTS_IMPLEMENTATION
+#endif
+
 #include "telnetty_core.h"
 #include <stdarg.h>
 #include <time.h>
