@@ -15,6 +15,9 @@
 #include <string.h>
 #include <stdint.h>
 
+/* Abort if anything writes to out_buffer around an installed out_hook. */
+#define TELNETTY_DEBUG_OUT_HOOK
+
 #define TELNETTY_IMPLEMENTATION
 #define TELNETTY_EVENTS_IMPLEMENTATION
 #define TELNETTY_BUFFER_IMPLEMENTATION
@@ -208,7 +211,8 @@ static void test_pool_exhaustion_fallback(void) {
     OK(c != NULL, "third get after exhaustion falls back to fresh alloc");
     telnetty_buffer_pool_put(pool, a);
     telnetty_buffer_pool_put(pool, b);
-    telnetty_buffer_pool_put(pool, c);
+    OK(telnetty_buffer_pool_put(pool, c) != 0, "put past capacity is refused");
+    telnetty_buffer_destroy(c);
     telnetty_buffer_pool_destroy(pool);
 }
 
@@ -435,35 +439,52 @@ static void test_mcp_line_parser(void) {
     telnetty_mcp_data_t* d = telnetty_mcp_of(ctx);
     OK(d != NULL, "mcp: data attached");
 
-    /* 1. Initial handshake: peer sends `#$#mcp` — we should reply with our
-     *    own `mcp` line and advance state to ENABLED. */
+    /* 1. Client mode: the server opens with `#$#mcp version` (no key); we
+     *    pick a key, answer with it and advance to ENABLED. */
     telnetty_buffer_reset(ctx->out_buffer);
-    telnetty_mcp_handle_line(ctx, "#$#mcp authentication-key: peerkey version: 2.1 to: 2.1");
+    telnetty_mcp_handle_line(ctx, "#$#mcp version: 2.1 to: 2.1");
     OK(d->state == TELNETTY_MCP_STATE_ENABLED, "mcp: state enabled after handshake");
-    OK(ctx->out_buffer->length > 0, "mcp: reply emitted for handshake");
+    OK(d->session_key != NULL, "mcp: client chose a session key");
 
-    /* The reply must be an in-band `#$#mcp ` line, not IAC SB. */
+    /* The reply must be an in-band `#$#mcp authentication-key:` line. */
     const uint8_t* wire = ctx->out_buffer->data;
     OK(ctx->out_buffer->length >= 4 &&
        wire[0] == '#' && wire[1] == '$' && wire[2] == '#',
        "mcp: reply starts with #$#");
+    char want[96];
+    snprintf(want, sizeof(want), "#$#mcp authentication-key: %s version: 2.1 to: 2.1",
+             d->session_key);
+    OK(ctx->out_buffer->length >= strlen(want) &&
+       memcmp(wire, want, strlen(want)) == 0, "mcp: reply carries our key");
+    snprintf(want, sizeof(want), "mcp-negotiate-can %s package: mcp-negotiate", d->session_key);
+    int saw_neg = 0;
+    for (size_t i = 0; i + strlen(want) <= ctx->out_buffer->length; i++)
+        if (memcmp(wire + i, want, strlen(want)) == 0) { saw_neg = 1; break; }
+    OK(saw_neg, "mcp: mcp-negotiate advertised with the session key");
 
+    char line[160];
     /* 2. Package dispatch: quoted arg with embedded space must land as one
      *    key-value pair on `data`. */
-    d->packages[0]->active = 1;  /* force-active for test isolation */
     mcp_pkg_calls = 0;
-    telnetty_mcp_handle_line(ctx,
-        "#$#test-pkg-do peerkey name: \"hello world\" count: 42");
+    snprintf(line, sizeof(line), "#$#test-pkg-do %s name: \"hello world\" count: 42",
+             d->session_key);
+    telnetty_mcp_handle_line(ctx, line);
     OK(mcp_pkg_calls == 1, "mcp: package handler called once");
     OK(strcmp(mcp_pkg_msg, "do") == 0, "mcp: message parsed as 'do'");
     OK(strstr(mcp_pkg_args, "name:") != NULL, "mcp: name key present in args");
     OK(strstr(mcp_pkg_args, "count: 42") != NULL, "mcp: count value present");
 
+    /* Wrong or missing key: ignored (MCP 2.1). */
+    mcp_pkg_calls = 0;
+    telnetty_mcp_handle_line(ctx, "#$#test-pkg-do wrongkey name: x");
+    telnetty_mcp_handle_line(ctx, "#$#test-pkg-do");
+    OK(mcp_pkg_calls == 0, "mcp: wrong/missing key ignored");
+
     /* 3. Cord flow: message with `_data-tag`, then a `#$#* <tag>` continuation,
      *    then `#$#: <tag>` terminator. Cord should be created and released. */
     mcp_pkg_calls = 0;
-    telnetty_mcp_handle_line(ctx,
-        "#$#test-pkg-multi peerkey _data-tag: t1");
+    snprintf(line, sizeof(line), "#$#test-pkg-multi %s _data-tag: t1", d->session_key);
+    telnetty_mcp_handle_line(ctx, line);
     OK(mcp_pkg_calls == 1, "mcp: multi message dispatched");
 
     telnetty_mcp_cord_t* c = telnetty__mcp_cord_find(d, "t1");
@@ -477,13 +498,36 @@ static void test_mcp_line_parser(void) {
     c = telnetty__mcp_cord_find(d, "t1");
     OK(c == NULL, "mcp: cord t1 released by terminator");
 
-    /* 4. mcp-negotiate-end must advance state (from ENABLED to NEGOTIATING
-     *    per the current impl — the important thing is the line is accepted
-     *    without dispatching to a package handler). */
+    /* 4. negotiate-can marks peer support; negotiate-end is not dispatched
+     *    to a package. */
     mcp_pkg_calls = 0;
-    telnetty_mcp_handle_line(ctx, "#$#mcp-negotiate-end peerkey");
+    snprintf(line, sizeof(line),
+             "#$#mcp-negotiate-can %s package: test-pkg min-version: 1.0 max-version: 1.0",
+             d->session_key);
+    telnetty_mcp_handle_line(ctx, line);
+    OK(telnetty_mcp_get_package(ctx, "test-pkg")->peer_supports, "mcp: peer support recorded");
+    snprintf(line, sizeof(line), "#$#mcp-negotiate-end %s", d->session_key);
+    telnetty_mcp_handle_line(ctx, line);
     OK(mcp_pkg_calls == 0, "mcp: negotiate-end not dispatched to package");
+    OK(d->negotiate_done, "mcp: negotiate-end recorded");
 
+    /* Builtin placeholders must not swallow real dns-* messages. */
+    OK(!telnetty_mcp_is_package_active(ctx, "dns"), "mcp: builtin placeholders inactive");
+
+    telnetty_destroy(ctx);
+
+    /* Server mode: the client's reply sets the key; messages need it. */
+    ctx = telnetty_create(NULL, NULL);
+    telnetty_enable_mcp(ctx, true, TELNETTY_MCP_AUTH_KEY, NULL);
+    telnetty_mcp_register_package(ctx, "test-pkg", "1.0", NULL, mcp_pkg_handler, NULL);
+    d = telnetty_mcp_of(ctx);
+    telnetty_mcp_handle_line(ctx, "#$#mcp authentication-key: ck9 version: 1.0 to: 2.1");
+    OK(d->state == TELNETTY_MCP_STATE_ENABLED, "mcp server: enabled by client reply");
+    OK(d->session_key && strcmp(d->session_key, "ck9") == 0, "mcp server: stores client key");
+    mcp_pkg_calls = 0;
+    telnetty_mcp_handle_line(ctx, "#$#test-pkg-do ck9 a: 1");
+    telnetty_mcp_handle_line(ctx, "#$#test-pkg-do spoof a: 1");
+    OK(mcp_pkg_calls == 1, "mcp server: only the client's key dispatches");
     telnetty_destroy(ctx);
 }
 
@@ -499,7 +543,7 @@ static void capture_log(telnetty_context_t* ctx, telnetty_log_level_t level,
     (void)ctx; (void)ud;
     log_calls++;
     log_last_level = level;
-    snprintf(log_last_msg, sizeof(log_last_msg), "%s", message ? message : "");
+    snprintf(log_last_msg, sizeof(log_last_msg), "%.127s", message ? message : "");
     snprintf(log_last_cat, sizeof(log_last_cat), "%s", category ? category : "");
 }
 
@@ -1649,6 +1693,361 @@ static void test_zmp_roundtrip(void) {
     telnetty_destroy(ctx);
 }
 
+
+/* ----- MCCP2 / MCCP3 stream integrity ----- */
+
+#ifdef TELNETTY_HAVE_ZLIB
+#include <zlib.h>
+
+static uint8_t zc_data[4096];
+static size_t  zc_data_len = 0;
+static int     zc_iac_cmds[256];
+static int     zc_errors = 0;
+static int     zc_last_error = 0;
+
+static void zc_reset(void) {
+    zc_data_len = 0;
+    memset(zc_iac_cmds, 0, sizeof(zc_iac_cmds));
+    zc_errors = 0;
+    zc_last_error = 0;
+}
+
+static void zc_cb(telnetty_context_t* ctx, telnetty_event_type_t ev,
+                  const telnetty_event_data_union_t* d, void* ud) {
+    (void)ctx; (void)ud;
+    if (ev == TELNETTY_EVENT_DATA) {
+        size_t n = d->data.length;
+        if (n > sizeof(zc_data) - zc_data_len) n = sizeof(zc_data) - zc_data_len;
+        memcpy(zc_data + zc_data_len, d->data.data, n);
+        zc_data_len += n;
+    } else if (ev == TELNETTY_EVENT_IAC) {
+        zc_iac_cmds[d->iac.command]++;
+    } else if (ev == TELNETTY_EVENT_ERROR) {
+        zc_errors++;
+        zc_last_error = d->error.code;
+    }
+}
+
+/* Deflate `in` into `out` with `flush`; returns bytes written. */
+static size_t zc_deflate(z_stream* zs, const void* in, size_t len, int flush,
+                         uint8_t* out, size_t cap) {
+    zs->next_in = (Bytef*)in;
+    zs->avail_in = (uInt)len;
+    zs->next_out = out;
+    zs->avail_out = (uInt)cap;
+    deflate(zs, flush);
+    return cap - zs->avail_out;
+}
+
+/* Inflate `in` fully; returns bytes written, *end set on Z_STREAM_END and
+ * *consumed to the input bytes used. */
+static size_t zc_inflate(z_stream* zs, const uint8_t* in, size_t len,
+                         uint8_t* out, size_t cap, int* end, size_t* consumed) {
+    zs->next_in = (Bytef*)in;
+    zs->avail_in = (uInt)len;
+    zs->next_out = out;
+    zs->avail_out = (uInt)cap;
+    int rc = inflate(zs, Z_SYNC_FLUSH);
+    if (end) *end = (rc == Z_STREAM_END);
+    if (consumed) *consumed = len - zs->avail_in;
+    return cap - zs->avail_out;
+}
+
+static int contains(const uint8_t* hay, size_t n, const void* needle, size_t m) {
+    for (size_t i = 0; i + m <= n; i++)
+        if (memcmp(hay + i, needle, m) == 0) return 1;
+    return 0;
+}
+
+/* Server side: build "DO 87, SB 87 SE, <zlib>" exactly as TinTin++ sends it. */
+static size_t mccp3_client_wire(uint8_t* wire, size_t cap, z_stream* zs,
+                                const uint8_t* plain, size_t plain_len, int flush) {
+    const uint8_t head[] = {
+        TELNETTY_IAC, TELNETTY_DO, TELNETTY_TELOPT_MCCP3,
+        TELNETTY_IAC, TELNETTY_SB, TELNETTY_TELOPT_MCCP3, TELNETTY_IAC, TELNETTY_SE
+    };
+    memcpy(wire, head, sizeof(head));
+    return sizeof(head) + zc_deflate(zs, plain, plain_len, flush,
+                                     wire + sizeof(head), cap - sizeof(head));
+}
+
+static void test_mccp3_server_single_read(void) {
+    zc_reset();
+    telnetty_context_t* ctx = telnetty_create(zc_cb, NULL);
+    OK(telnetty_enable_mccp3(ctx, 0) == 0, "mccp3: enable");
+
+    z_stream zs; memset(&zs, 0, sizeof(zs));
+    deflateInit(&zs, 6);
+    /* Compressed payload carries telnet commands: NOP, an escaped 0xFF. */
+    const uint8_t plain[] = { 'l','o','o','k','\r','\n',
+                              TELNETTY_IAC, TELNETTY_NOP,
+                              'x', TELNETTY_IAC, TELNETTY_IAC, 'y' };
+    uint8_t wire[512];
+    size_t n = mccp3_client_wire(wire, sizeof(wire), &zs, plain, sizeof(plain), Z_SYNC_FLUSH);
+
+    int rc = telnetty_process(ctx, wire, n);
+    OK(rc == (int)n, "mccp3: whole read accepted");
+    OK(telnetty_is_mccp3_enabled(ctx), "mccp3: enabled after DO");
+    const uint8_t want[] = { 'l','o','o','k','\r','\n','x', 0xFF, 'y' };
+    OK(zc_data_len == sizeof(want) && memcmp(zc_data, want, sizeof(want)) == 0,
+       "mccp3: same-read text arrives decompressed");
+    OK(zc_iac_cmds[TELNETTY_NOP] == 1, "mccp3: IAC inside compressed stream parsed");
+    OK(zc_errors == 0, "mccp3: no errors");
+    OK(ctx->stats.bytes_received == n, "mccp3: wire bytes counted once");
+
+    /* Later reads stay compressed. */
+    zc_reset();
+    uint8_t more[64];
+    size_t m = zc_deflate(&zs, "say hi\r\n", 8, Z_SYNC_FLUSH, more, sizeof(more));
+    OK(telnetty_process(ctx, more, m) == (int)m, "mccp3: follow-up read accepted");
+    OK(zc_data_len == 8 && memcmp(zc_data, "say hi\r\n", 8) == 0,
+       "mccp3: follow-up read decompressed");
+
+    /* Client finishes its stream; trailing bytes in the same read are plain. */
+    zc_reset();
+    uint8_t fin[64];
+    size_t f = zc_deflate(&zs, "bye", 3, Z_FINISH, fin, sizeof(fin));
+    memcpy(fin + f, "plain", 5);
+    OK(telnetty_process(ctx, fin, f + 5) == (int)(f + 5), "mccp3: stream-end read accepted");
+    OK(zc_data_len == 8 && memcmp(zc_data, "byeplain", 8) == 0,
+       "mccp3: Z_STREAM_END resumes plain parsing");
+    OK(ctx->in_hook == NULL, "mccp3: input hook removed at stream end");
+
+    size_t c = 0, u = 0; double r = 0;
+    telnetty_mccp3_get_stats(ctx, &c, &u, &r);
+    OK(c > 0 && u == sizeof(plain) + 8 + 3, "mccp3: real stats");
+
+    deflateEnd(&zs);
+    telnetty_destroy(ctx);
+}
+
+static void test_mccp3_server_split_reads(void) {
+    zc_reset();
+    telnetty_context_t* ctx = telnetty_create(zc_cb, NULL);
+    telnetty_enable_mccp3(ctx, 0);
+
+    z_stream zs; memset(&zs, 0, sizeof(zs));
+    deflateInit(&zs, 6);
+    const char* text = "a fairly long line of input to compress\r\n";
+    uint8_t wire[512];
+    size_t n = mccp3_client_wire(wire, sizeof(wire), &zs,
+                                 (const uint8_t*)text, strlen(text), Z_SYNC_FLUSH);
+    for (size_t i = 0; i < n; i++) telnetty_process(ctx, wire + i, 1);
+    OK(zc_data_len == strlen(text) && memcmp(zc_data, text, strlen(text)) == 0,
+       "mccp3: byte-at-a-time reads decompress");
+    OK(zc_errors == 0, "mccp3: split reads raise no error");
+    deflateEnd(&zs);
+    telnetty_destroy(ctx);
+}
+
+static void test_mccp3_server_corrupt_stream(void) {
+    zc_reset();
+    telnetty_context_t* ctx = telnetty_create(zc_cb, NULL);
+    telnetty_enable_mccp3(ctx, 0);
+    const uint8_t wire[] = {
+        TELNETTY_IAC, TELNETTY_DO, TELNETTY_TELOPT_MCCP3,
+        TELNETTY_IAC, TELNETTY_SB, TELNETTY_TELOPT_MCCP3, TELNETTY_IAC, TELNETTY_SE,
+        'n','o','t',' ','z','l','i','b'
+    };
+    telnetty_buffer_reset(ctx->out_buffer);
+    OK(telnetty_process(ctx, wire, sizeof(wire)) < 0, "mccp3: corrupt stream reports failure");
+    OK(zc_errors == 1 && zc_last_error == TELNETTY_ERR_COMPRESSION,
+       "mccp3: corrupt stream fires ERR_COMPRESSION");
+    OK(zc_data_len == 0, "mccp3: no garbage delivered as data");
+    OK(ctx->in_hook == NULL, "mccp3: hook dropped after corruption");
+    OK(!telnetty_is_mccp3_enabled(ctx), "mccp3: disabled after corruption");
+    const uint8_t wont[] = { TELNETTY_IAC, TELNETTY_WONT, TELNETTY_TELOPT_MCCP3 };
+    OK(contains(ctx->out_buffer->data, ctx->out_buffer->length, wont, 3),
+       "mccp3: WONT sent after corruption");
+
+    zc_reset();
+    OK(telnetty_process(ctx, (const uint8_t*)"ok", 2) == 2, "mccp3: plain parsing resumes");
+    OK(zc_data_len == 2 && memcmp(zc_data, "ok", 2) == 0, "mccp3: plain data after reset");
+    telnetty_destroy(ctx);
+}
+
+/* Inflate ctx's out_buffer from just after the MCCP2 start marker. */
+static size_t mccp2_inflate_out(telnetty_context_t* ctx, uint8_t* out, size_t cap,
+                                int* end, size_t* trailing_at) {
+    const uint8_t marker[] = { TELNETTY_IAC, TELNETTY_SB, TELNETTY_TELOPT_MCCP2,
+                               TELNETTY_IAC, TELNETTY_SE };
+    const uint8_t* w = ctx->out_buffer->data;
+    size_t wl = ctx->out_buffer->length;
+    size_t at = 0;
+    while (at + 5 <= wl && memcmp(w + at, marker, 5) != 0) at++;
+    if (at + 5 > wl) return 0;
+    at += 5;
+    z_stream zs; memset(&zs, 0, sizeof(zs));
+    inflateInit(&zs);
+    size_t consumed = 0;
+    size_t n = zc_inflate(&zs, w + at, wl - at, out, cap, end, &consumed);
+    if (trailing_at) *trailing_at = at + consumed;
+    inflateEnd(&zs);
+    return n;
+}
+
+static void test_mccp2_color_osc_inflate_cleanly(void) {
+    telnetty_context_t* ctx = telnetty_create(NULL, NULL);
+    telnetty_enable_mccp2(ctx, 0);
+    const uint8_t peer_do[] = { TELNETTY_IAC, TELNETTY_DO, TELNETTY_TELOPT_MCCP2 };
+    telnetty_process(ctx, peer_do, sizeof(peer_do));
+    OK(telnetty_is_mccp2_enabled(ctx), "mccp2: compressing after DO");
+
+    telnetty_color_init(ctx, false);
+    OK(telnetty_color_set_foreground(ctx, TELNETTY_COLOR_RED) == 0, "mccp2: color emit");
+    OK(telnetty_osc8_link(ctx, NULL, "https://x.test/\xff", "link") == 0, "mccp2: osc8 emit");
+    OK(telnetty_osc_query_color(ctx, 11, 0) == 0, "mccp2: osc query emit");
+    OK(telnetty_color_reset(ctx) == 0, "mccp2: color reset emit");
+
+    uint8_t out[512];
+    int end = 0;
+    size_t n = mccp2_inflate_out(ctx, out, sizeof(out), &end, NULL);
+    const char want[] = "\033[31m"
+                        "\033]8;;https://x.test/\xff\xff\033\\link\033]8;;\033\\"
+                        "\033]11;?\033\\"
+                        "\033[0m";
+    OK(n == sizeof(want) - 1 && memcmp(out, want, n) == 0,
+       "mccp2: color/OSC output inflates cleanly (IAC escaped)");
+    telnetty_destroy(ctx);
+}
+
+static void test_mccp2_disable_finishes_stream(void) {
+    telnetty_context_t* ctx = telnetty_create(NULL, NULL);
+    telnetty_enable_mccp2(ctx, 0);
+    const uint8_t peer_do[] = { TELNETTY_IAC, TELNETTY_DO, TELNETTY_TELOPT_MCCP2 };
+    telnetty_process(ctx, peer_do, sizeof(peer_do));
+    telnetty_send(ctx, (const uint8_t*)"zipped", 6);
+    OK(telnetty_disable_mccp2(ctx) == 0, "mccp2: disable");
+    OK(!telnetty_is_mccp2_enabled(ctx), "mccp2: not compressing after disable");
+    OK(ctx->out_hook == NULL, "mccp2: out hook removed");
+    telnetty_send(ctx, (const uint8_t*)"plain", 5);
+
+    uint8_t out[256];
+    int end = 0;
+    size_t trailing = 0;
+    size_t n = mccp2_inflate_out(ctx, out, sizeof(out), &end, &trailing);
+    const uint8_t want[] = { 'z','i','p','p','e','d',
+                             TELNETTY_IAC, TELNETTY_WONT, TELNETTY_TELOPT_MCCP2 };
+    OK(end, "mccp2: disable ends the zlib stream");
+    OK(n == sizeof(want) && memcmp(out, want, n) == 0, "mccp2: WONT inside the stream");
+    OK(ctx->out_buffer->length - trailing == 5 &&
+       memcmp(ctx->out_buffer->data + trailing, "plain", 5) == 0,
+       "mccp2: bytes after stream end are uncompressed");
+
+    /* Peer's DONT reply settles the option without touching the output. */
+    size_t before = ctx->out_buffer->length;
+    const uint8_t peer_dont[] = { TELNETTY_IAC, TELNETTY_DONT, TELNETTY_TELOPT_MCCP2 };
+    telnetty_process(ctx, peer_dont, sizeof(peer_dont));
+    OK(ctx->out_buffer->length == before, "mccp2: DONT after disable is quiet");
+    telnetty_destroy(ctx);
+}
+
+static void test_mccp2_hook_without_stream_errors(void) {
+    zc_reset();
+    telnetty_context_t* ctx = telnetty_create(zc_cb, NULL);
+    telnetty_enable_mccp2(ctx, 0);
+    telnetty_set_out_hook(ctx, telnetty_mccp2_out_hook);
+    size_t before = ctx->out_buffer->length;
+    OK(telnetty_send(ctx, (const uint8_t*)"raw", 3) < 0, "mccp2: hook without stream refuses");
+    OK(ctx->out_buffer->length == before, "mccp2: nothing raw appended");
+    OK(zc_last_error == TELNETTY_ERR_COMPRESSION, "mccp2: error surfaced");
+    telnetty_set_out_hook(ctx, NULL);
+    telnetty_destroy(ctx);
+}
+
+/* Move everything queued on `from` into `to`. */
+static void zc_pump(telnetty_context_t* from, telnetty_context_t* to) {
+    telnetty_buffer_t* b = from->out_buffer;
+    if (b->length == 0) return;
+    uint8_t tmp[8192];
+    size_t n = b->length < sizeof(tmp) ? b->length : sizeof(tmp);
+    memcpy(tmp, b->data, n);
+    telnetty_buffer_reset(b);
+    telnetty_process(to, tmp, n);
+}
+
+static void test_mccp_server_client_roundtrip(void) {
+    zc_reset();
+    telnetty_context_t* srv = telnetty_create(NULL, NULL);
+    telnetty_context_t* cli = telnetty_create(zc_cb, NULL);
+    OK(telnetty_accept_mccp2(cli) == 0, "roundtrip: client accepts mccp2");
+    OK(telnetty_accept_mccp3(cli, 0) == 0, "roundtrip: client accepts mccp3");
+    OK(telnetty_compression_auto_negotiate(srv, true) == 0, "roundtrip: server offers");
+
+    /* Server sends text in the same buffer as its negotiation. */
+    for (int i = 0; i < 4; i++) {
+        zc_pump(srv, cli);
+        zc_pump(cli, srv);
+    }
+    OK(telnetty_is_mccp2_enabled(srv), "roundtrip: server compressing");
+    OK(telnetty_is_mccp2_enabled(cli), "roundtrip: client inflating");
+    OK(telnetty_is_mccp3_enabled(srv) && telnetty_is_mccp3_enabled(cli),
+       "roundtrip: mccp3 negotiated both ends");
+
+    telnetty_send(srv, (const uint8_t*)"Welcome!\r\n", 10);
+    zc_pump(srv, cli);
+    OK(zc_data_len == 10 && memcmp(zc_data, "Welcome!\r\n", 10) == 0,
+       "roundtrip: client sees server text decompressed");
+
+    /* Client -> server through MCCP3; watch what the server parses. */
+    telnetty_send(cli, (const uint8_t*)"look\r\n", 6);
+    srv->event_cb = zc_cb;
+    zc_reset();
+    zc_pump(cli, srv);
+    OK(zc_data_len == 6 && memcmp(zc_data, "look\r\n", 6) == 0,
+       "roundtrip: server sees client text decompressed");
+    OK(zc_errors == 0, "roundtrip: no errors");
+
+    /* Server ends MCCP2: client drops back to plain. */
+    srv->event_cb = NULL;
+    cli->event_cb = zc_cb;
+    zc_reset();
+    telnetty_disable_mccp2(srv);
+    telnetty_send(srv, (const uint8_t*)"after", 5);
+    zc_pump(srv, cli);
+    OK(!telnetty_is_mccp2_enabled(cli), "roundtrip: client stopped inflating");
+    OK(zc_data_len == 5 && memcmp(zc_data, "after", 5) == 0,
+       "roundtrip: plain text after server stream end");
+
+    telnetty_destroy(srv);
+    telnetty_destroy(cli);
+}
+#endif /* TELNETTY_HAVE_ZLIB */
+
+/* ----- telnetty_process honours the input hook; hooks installed mid-read
+ *       get the rest of the buffer ----- */
+
+static uint8_t mid_hook_seen[64];
+static size_t  mid_hook_seen_len = 0;
+
+static int mid_hook(telnetty_context_t* ctx, const uint8_t* data, size_t len) {
+    (void)ctx;
+    memcpy(mid_hook_seen + mid_hook_seen_len, data, len);
+    mid_hook_seen_len += len;
+    return (int)len;
+}
+
+static void mid_hook_sb(telnetty_context_t* ctx, uint8_t option,
+                        const uint8_t* data, size_t length, void* ud) {
+    (void)option; (void)data; (void)length; (void)ud;
+    telnetty_set_input_hook(ctx, mid_hook, NULL);
+}
+
+static void test_input_hook_mid_buffer_handoff(void) {
+    mid_hook_seen_len = 0;
+    telnetty_context_t* ctx = telnetty_create(NULL, NULL);
+    telnetty_register_sb_handler(ctx, 200, mid_hook_sb, NULL);
+    const uint8_t wire[] = { 'p', TELNETTY_IAC, TELNETTY_SB, 200, TELNETTY_IAC, TELNETTY_SE,
+                             'r', 'e', 's', 't' };
+    OK(telnetty_process(ctx, wire, sizeof(wire)) == (int)sizeof(wire),
+       "handoff: whole buffer accounted for");
+    OK(mid_hook_seen_len == 4 && memcmp(mid_hook_seen, "rest", 4) == 0,
+       "handoff: bytes after the SB go to the new hook");
+    OK(telnetty_process(ctx, (const uint8_t*)"xy", 2) == 2, "handoff: next read");
+    OK(mid_hook_seen_len == 6, "handoff: telnetty_process routes via hook");
+    telnetty_destroy(ctx);
+}
+
 int main(void) {
     printf("--- Telnetty Extended-Surface Tests ---\n");
     test_version_macros();
@@ -1694,6 +2093,17 @@ int main(void) {
     test_buffer_append_limit();
     test_atcp_roundtrip();
     test_mcp_does_not_negotiate_on_wire();
+    test_zmp_roundtrip();
+    test_input_hook_mid_buffer_handoff();
+#ifdef TELNETTY_HAVE_ZLIB
+    test_mccp3_server_single_read();
+    test_mccp3_server_split_reads();
+    test_mccp3_server_corrupt_stream();
+    test_mccp2_color_osc_inflate_cleanly();
+    test_mccp2_disable_finishes_stream();
+    test_mccp2_hook_without_stream_errors();
+    test_mccp_server_client_roundtrip();
+#endif
 
     printf("\nPassed: %d\nFailed: %d\n", passed, failed);
     return failed == 0 ? 0 : 1;

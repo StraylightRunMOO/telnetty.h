@@ -30,8 +30,8 @@ wire-level compatibility change.
   extended-event handler so app DATA callbacks still see the full,
   untouched text stream.
 - **MCCP1** (TELOPT 85): `telnetty_enable_mccp1` — legacy compression
-  protocol responds cleanly to peer offers rather than being silent;
-  consumers install their own SB handler for the inflate.
+  protocol responds cleanly to peer offers rather than being silent.
+  Negotiation only; telnetty never compresses or inflates with MCCP1.
 - **MNES** (MUD NEW-ENVIRON Standard) canonical variable names and
   `telnetty_send_mnes(ctx, client_name, version, term, charset, mtts,
   screen_reader)` on top of the existing RFC 1572 NEW-ENVIRON.
@@ -78,6 +78,85 @@ wire-level compatibility change.
   current position, avoiding wraparound in the size calculation.
 - The simple socket examples include the POSIX `select` declarations and use
   the current `hostent` address-list field.
+
+### Fixed — compression and stream integrity
+
+- **MCCP3 now inflates client input.** The roles were reversed (the server
+  set up a deflate stream on DO) and nothing handled the client's
+  `IAC SB MCCP3 IAC SE` start marker, so a client such as TinTin++ had its
+  compressed bytes parsed as keystrokes. The server now inflates from the
+  marker on, including bytes after the marker in the same read. On the
+  client's `Z_STREAM_END` it goes back to plain parsing. A corrupt stream
+  fires `EVENT_ERROR` (`TELNETTY_ERR_COMPRESSION`), sends `WONT MCCP3`, and
+  is never parsed as text. `telnetty_mccp3_get_stats` reports real numbers.
+- **`telnetty_process()` honors the input hook.** Existing callers get
+  decompression without code changes, and `telnetty_process_inbound()` is now
+  an alias. If a handler installs a hook partway through a buffer, the rest
+  of that buffer goes to the hook. Nested calls from inside a hook parse
+  directly.
+- **Color and OSC helpers no longer corrupt MCCP2 streams.**
+  `telnetty__color_emit`, `telnetty_osc8_link` and `telnetty_osc_query_color`
+  appended straight to `out_buffer`, bypassing the output hook. They now go
+  through `telnetty_send`, which also IAC-escapes 0xFF bytes in OSC 8 URLs
+  and text.
+- MCCP2 output with the hook installed but no live stream is now an error,
+  not a raw append into the compressed stream. Disabling MCCP2 (or a peer's
+  DONT) ends the stream with `Z_FINISH`, so the client resumes plain parsing
+  at the right byte. Calling enable twice no longer frees live state.
+- Define `TELNETTY_DEBUG_OUT_HOOK` to abort when bytes reach `out_buffer`
+  around an installed output hook. The extended test suite enables it.
+
+### Added — compression client side
+
+- `telnetty_accept_mccp2(ctx)`: inflate the server's MCCP2 stream.
+- `telnetty_accept_mccp3(ctx, level)`: answer the server's MCCP3 offer,
+  send the start marker, and compress our output.
+- `telnetty_compression_cleanup` now ends running streams and removes the
+  hooks. `telnetty_compression_get_stats` zero-fills the fields it doesn't
+  track.
+
+### Fixed — protocol correctness
+
+- **MCP 2.1 handshake follows the spec.** In server mode, telnetty now stores
+  the key from the client's `#$#mcp authentication-key:` reply instead of
+  answering with an auth-key line of its own. In client mode, it chooses a
+  key when the server's opening line arrives. Every later message must carry
+  the session key, and messages without it are ignored. `mcp-negotiate` is
+  advertised as MCP 2.1 requires, packages are advertised at their own
+  versions, and `mcp-negotiate-can` records `peer_supports`.
+- The placeholder MCP builtin packages (`mcp-core`, `simple-edit`, `redirect`,
+  `dns`) have empty handlers and are now registered inactive. Before, `dns`
+  prefix-matched every real `dns-org-mud-moo-*` message and dropped it before
+  it could reach the default handler.
+- `telnetty_disable_mcp` affects only its own context. It used to clear the
+  data hook for every connection in the process.
+- `telnetty_mcp_get_packages` and `telnetty_mcp_generate_message_id` are
+  implemented. The message ID counter is per context, not process-wide.
+- GMCP: `Core.Hello` is sent by the client side (the peer's WILL), not by a
+  server answering DO. Payloads over 1 KiB reach the callback whole instead
+  of truncated. `telnetty_gmcp_register_module` / `_unregister_module`
+  maintain the module list and send `Core.Supports.Add` / `.Remove` once
+  GMCP is up.
+- MSDP: `telnetty_msdp_get`, `_set_flags`, `_clear_flags` and `_remove` are
+  backed by a real variable table (scalar values received or sent).
+  `telnetty_msdp_request` sends `VAR "SEND" VAL <name>` as the MSDP spec
+  requires.
+- NEW-ENVIRON: frames now start with the RFC 1572 `IS` command byte
+  (`telnetty_send_environ_info` sends `INFO`). Peer `IS` / `INFO` replies are
+  parsed and stored for `telnetty_get_environ`. `telnetty_enable_environ` no
+  longer leaks an unregistered tracker.
+- TTYPE and NAWS: `telnetty_get_terminal_type` and `telnetty_get_window_size`
+  return what the peer sent. The TTYPE state no longer leaks.
+- `telnetty_color_clear_attribute(BOLD)` emits SGR 22, not 21 (double
+  underline), and `NO_*` values are emitted as-is.
+
+### Fixed — build
+
+- The extended-event convenience wrappers are only defined with
+  `TELNETTY_EVENTS_IMPLEMENTATION`, which clears `-Wundefined-internal` in
+  translation units that include the header without the implementation.
+- The core hook pointers are `static`, so two translation units can both
+  define `TELNETTY_IMPLEMENTATION` without duplicate-symbol link errors.
 
 ### Added — test infrastructure
 

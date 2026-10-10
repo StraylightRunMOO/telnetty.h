@@ -486,6 +486,15 @@ struct telnetty_context {
                                          *   goes negative and we know to trip. */
     int64_t  iac_tokens;
     uint64_t rate_refill_ms;            /**< Last bucket refill timestamp. */
+
+    /* Nesting depth of in_hook calls. While > 0, telnetty_process() parses
+     * directly instead of re-entering the hook, so a hook can feed its
+     * decoded output back through telnetty_process(). */
+    int in_hook_depth;
+
+    /* out_buffer length as of the last sanctioned write. Only consulted
+     * when TELNETTY_DEBUG_OUT_HOOK is defined (see telnetty_out_write). */
+    size_t out_checked_len;
 };
 
 /* Context flags */
@@ -661,18 +670,19 @@ static TELNETTY_UNUSED void telnetty_set_out_hook(
     int (*hook)(telnetty_context_t* ctx, const uint8_t* data, size_t len)
 );
 
-/** Install or clear the inbound byte filter. When set, callers use
- *  telnetty_process_inbound() so the peer's raw bytes are handed to `hook`
- *  first (e.g. an inflate step for MCCP). Hooks call telnetty_process()
- *  themselves on the decoded output. NULL restores the pass-through. */
+/** Install or clear the inbound byte filter. While set, telnetty_process()
+ *  hands the peer's raw bytes to `hook` first (e.g. an inflate step for
+ *  MCCP). The hook calls telnetty_process() on the decoded output; that
+ *  nested call parses directly. A hook installed by a handler mid-buffer
+ *  receives the rest of that same buffer. NULL restores the pass-through. */
 static TELNETTY_UNUSED void telnetty_set_input_hook(
     telnetty_context_t* ctx,
     int (*hook)(telnetty_context_t* ctx, const uint8_t* data, size_t len),
     void* user_data
 );
 
-/** Route peer bytes through the inbound hook when set, else straight into
- *  telnetty_process(). Return matches telnetty_process(): bytes accepted or -1. */
+/** Same as telnetty_process(), which now honors the inbound hook itself.
+ *  Kept for source compatibility. */
 static TELNETTY_UNUSED int telnetty_process_inbound(
     telnetty_context_t* ctx,
     const uint8_t* data,
@@ -731,10 +741,22 @@ static inline TELNETTY_UNUSED uint8_t telnetty_get_option_state(telnetty_context
     return local ? opt->us : opt->him;
 }
 
-/* Extended-event dispatch hook installed by telnetty_events.h. NULL when
- * the events implementation isn't compiled in. */
-extern void (*telnetty__extended_dispatch_hook)(
+/* Hooks populated by later headers when their IMPLEMENTATION macro is
+ * defined in the same translation unit. They are static (one copy per TU,
+ * zero-initialized) so several TUs can each compile the implementation
+ * without duplicate-symbol link errors. */
+
+/* Extended-event dispatcher, installed by telnetty_events.h. */
+static void (*telnetty__extended_dispatch_hook)(
     telnetty_context_t*, telnetty_event_type_t, const telnetty_event_data_union_t*);
+
+/* Frees ctx->event_handlers on destroy, installed by telnetty_events.h. */
+static void (*telnetty__event_handlers_free_hook)(void*);
+
+/* MCP 2.1 line observer, installed by telnetty_mcp.h so decoded data
+ * bytes can be assembled into #$# lines. */
+static void (*telnetty__mcp_data_hook)(
+    telnetty_context_t*, const uint8_t*, size_t);
 
 /**
  * Fire an event to the callback. Also runs any registered extended handlers
@@ -1066,21 +1088,45 @@ static telnetty_option_t* telnetty_ensure_option(
     return ctx->options[option];
 }
 
-/* All outbound bytes go through here so MCCP can wrap the stream. */
+/* Record out_buffer's length as the last sanctioned state. Consumers may
+ * drain the buffer (shrinking it) at any time; growth between two
+ * sanctioned writes means something appended around the out_hook. */
+static inline void telnetty__out_sync(telnetty_context_t* ctx) {
+    ctx->out_checked_len = ctx->out_buffer ? ctx->out_buffer->length : 0;
+}
+
+/* All outbound bytes go through here so MCCP can wrap the stream. The only
+ * other legitimate out_buffer writers are the out_hook itself and the
+ * uncompressed MCCP2 start marker written just before the hook goes in.
+ * Define TELNETTY_DEBUG_OUT_HOOK to assert that nothing else did. */
 static int telnetty_out_write(telnetty_context_t* ctx, const uint8_t* data, size_t len) {
     if (!ctx || !data || len == 0) return 0;
+#ifdef TELNETTY_DEBUG_OUT_HOOK
+    /* Not assert(): release builds define NDEBUG and would drop the check. */
+    if (ctx->out_hook && ctx->out_buffer &&
+        ctx->out_buffer->length > ctx->out_checked_len) {
+        fprintf(stderr, "telnetty: %zu byte(s) reached out_buffer around the "
+                "out_hook (stream corruption)\n",
+                ctx->out_buffer->length - ctx->out_checked_len);
+        abort();
+    }
+#endif
+    int rc;
     if (ctx->out_hook)
-        return ctx->out_hook(ctx, data, len);
-    if (telnetty_buffer_append(ctx->out_buffer, data, len) < 0)
-        return -1;
-    return (int)len;
+        rc = ctx->out_hook(ctx, data, len);
+    else
+        rc = telnetty_buffer_append(ctx->out_buffer, data, len) < 0 ? -1 : (int)len;
+    telnetty__out_sync(ctx);
+    return rc;
 }
 
 static TELNETTY_UNUSED void telnetty_set_out_hook(
     telnetty_context_t* ctx,
     int (*hook)(telnetty_context_t* ctx, const uint8_t* data, size_t len)
 ) {
-    if (ctx) ctx->out_hook = hook;
+    if (!ctx) return;
+    ctx->out_hook = hook;
+    telnetty__out_sync(ctx);
 }
 
 static TELNETTY_UNUSED void telnetty_set_input_hook(
@@ -1104,8 +1150,6 @@ static TELNETTY_UNUSED int telnetty_process_inbound(
     size_t length
 ) {
     if (!ctx) return -1;
-    if (ctx->in_hook)
-        return ctx->in_hook(ctx, data, length);
     return telnetty_process(ctx, data, length);
 }
 
@@ -1219,22 +1263,6 @@ static telnetty_context_t* telnetty_create(
     return ctx;
 }
 
-/* Optional hooks populated by later headers (events, color) when their
- * IMPLEMENTATION macro is defined in the same TU. NULL means the subsystem
- * is not compiled in and the destroy path skips it. */
-static void (*telnetty__event_handlers_free_hook)(void*) = NULL;
-
-/* Extended-event dispatcher. Called from telnetty_fire_event once the
- * events implementation installs it. */
-void (*telnetty__extended_dispatch_hook)(
-    telnetty_context_t*, telnetty_event_type_t, const telnetty_event_data_union_t*) = NULL;
-
-/* MCP 2.1 line observer. telnetty_mcp.h installs this on enable so decoded
- * data bytes can be assembled into #$# lines. NULL when that implementation
- * is not compiled into this translation unit. */
-void (*telnetty__mcp_data_hook)(
-    telnetty_context_t*, const uint8_t*, size_t) = NULL;
-
 /* Deliver a run of in-band bytes. The MCP hook, if installed, sees the
  * bytes before the DATA event and must copy anything it wants to keep:
  * `p` is only valid for the duration of the call. */
@@ -1305,13 +1333,44 @@ static inline void telnetty__rate_refill(telnetty_context_t* ctx) {
     ctx->rate_refill_ms = ctx->now_ms;
 }
 
+/* Hand wire bytes to the inbound hook. Wire bytes are counted here; the
+ * nested parse of decoded bytes does not count them again. */
+static int telnetty__run_in_hook(
+    telnetty_context_t* ctx,
+    const uint8_t* data,
+    size_t length
+) {
+    ctx->in_hook_depth++;
+    int rc = ctx->in_hook(ctx, data, length);
+    ctx->in_hook_depth--;
+    if (rc < 0) return rc;
+    if (ctx->in_hook_depth == 0)
+        ctx->stats.bytes_received += length;
+    return (int)length;
+}
+
+static int telnetty__parse(
+    telnetty_context_t* ctx,
+    const uint8_t* TELNETTY_RESTRICT data,
+    size_t length
+);
+
 static int telnetty_process(
     telnetty_context_t* ctx,
     const uint8_t* TELNETTY_RESTRICT data,
     size_t length
 ) {
     if (!ctx || !data || length == 0) return 0;
+    if (ctx->in_hook && ctx->in_hook_depth == 0)
+        return telnetty__run_in_hook(ctx, data, length);
+    return telnetty__parse(ctx, data, length);
+}
 
+static int telnetty__parse(
+    telnetty_context_t* ctx,
+    const uint8_t* TELNETTY_RESTRICT data,
+    size_t length
+) {
     /* Rate limit: byte bucket. Enforcement only kicks in once the caller
      * has driven telnetty_tick(); an unticked context skips it. */
     if (ctx->now_ms && ctx->rate_bytes_per_sec) {
@@ -1345,7 +1404,22 @@ static int telnetty_process(
 
     TELNETTY_DEBUG("Processing %zu bytes of data", length);
 
+    /* The hook that produced these bytes, if any (NULL at depth 0). */
+    int (*entry_hook)(struct telnetty_context*, const uint8_t*, size_t) = ctx->in_hook;
+
     while (i < length) {
+        /* A handler for the previous bytes installed a new inbound hook
+         * (MCCP3 start marker, say). Everything after that point is already
+         * encoded, so the rest of this buffer belongs to the hook. Bytes a
+         * hook decoded keep parsing here while that same hook stays put. */
+        if (TELNETTY_UNLIKELY(ctx->in_hook != entry_hook) && ctx->in_hook) {
+            if (ctx->in_hook_depth == 0)
+                ctx->stats.bytes_received += (uint64_t)processed;
+            int rc = telnetty__run_in_hook(ctx, data + i, length - i);
+            if (rc < 0) return rc;
+            return processed + rc;
+        }
+
         /* DATA fast path: coalesce a run of plain bytes into one event. */
         if (ctx->state == TELNETTY_STATE_DATA && TELNETTY_LIKELY(data[i] != TELNETTY_IAC)) {
             const uint8_t* p = data + i;
@@ -1403,7 +1477,8 @@ static int telnetty_process(
         i++;
     }
 
-    ctx->stats.bytes_received += processed;
+    if (ctx->in_hook_depth == 0)
+        ctx->stats.bytes_received += (uint64_t)processed;
     return processed;
 }
 

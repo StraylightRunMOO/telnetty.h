@@ -206,16 +206,6 @@ static void handle_telnetty_event(
                     telnetty_send_option(ctx, TELNETTY_WILL, option);
                     break;
                     
-                case TELNETTY_TELOPT_MCCP2:
-                    /* Server wants compression - enable it */
-                    telnetty_send_option(ctx, TELNETTY_WILL, option);
-                    break;
-                    
-                case TELNETTY_TELOPT_MCCP3:
-                    /* Server wants compression - enable it */
-                    telnetty_send_option(ctx, TELNETTY_WILL, option);
-                    break;
-                    
                 default:
                     /* For unknown options, send WONT */
                     telnetty_send_option(ctx, TELNETTY_WONT, option);
@@ -273,22 +263,18 @@ static void handle_telnetty_event(
             printf("\r\n[INFO] Connected to server\r\n");
             client.connected = true;
             
-            /* Send initial negotiation */
-            /* Request echo */
-            telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_ECHO);
-            
-            /* Request suppress go ahead */
-            telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_SGA);
-            
-            /* Request terminal type */
-            telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_TTYPE);
-            
-            /* Request window size */
-            telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_NAWS);
-            
-            /* Request compression */
-            telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_MCCP2);
-            telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_MCCP3);
+            /* Declare what we accept before the server's offers arrive:
+             * the server may ECHO / SGA (him), we may send TTYPE / NAWS
+             * (us). Unsupported offers are refused by the core. */
+            telnetty_set_option_support(ctx, TELNETTY_TELOPT_ECHO, 0, 1);
+            telnetty_set_option_support(ctx, TELNETTY_TELOPT_SGA, 1, 1);
+            telnetty_set_option_support(ctx, TELNETTY_TELOPT_TTYPE, 1, 0);
+            telnetty_set_option_support(ctx, TELNETTY_TELOPT_NAWS, 1, 0);
+
+            /* Compression: inflate the server's MCCP2 stream and compress
+             * our input with MCCP3 when the server offers them. */
+            telnetty_accept_mccp2(ctx);
+            telnetty_accept_mccp3(ctx, 0);
             
             break;
         }
@@ -555,6 +541,10 @@ int main(int argc, char* argv[]) {
     }
     
     printf("Connected! Type 'quit' to exit.\n");
+
+    /* Runs the CONNECT handler (option support, MCCP accept) before any
+     * server bytes are parsed. */
+    telnetty_fire_connect_event(client.telnetty_ctx, host, port);
     
     /* Set up file descriptor for non-blocking I/O */
     fcntl(client.fd, F_SETFL, O_NONBLOCK);

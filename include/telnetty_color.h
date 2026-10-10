@@ -568,7 +568,7 @@ static TELNETTY_UNUSED int telnetty_color_flush(telnetty_context_t* ctx);
  * OSC helpers — modern terminal Operating System Command sequences.
  * OSC 8 hyperlinks and OSC 4/10/11 palette queries are outside the SGR
  * pipeline, so they get their own small emit helpers that bypass the
- * color state and push directly into ctx->out_buffer.
+ * color state. Output goes through telnetty_send (IAC-escaped, MCCP-safe).
  * ============================================================================ */
 
 /**
@@ -816,8 +816,9 @@ static int telnetty__color_emit(telnetty_context_t* ctx, const char* code) {
     char buf[32];
     int n = snprintf(buf, sizeof(buf), "\033[%sm", code);
     if (n < 0 || (size_t)n >= sizeof(buf)) return -1;
-    if (!ctx->out_buffer) return -1;
-    return telnetty_buffer_append(ctx->out_buffer, (const uint8_t*)buf, (size_t)n) < 0 ? -1 : 0;
+    /* telnetty_send, not a raw out_buffer append: it routes through the
+     * out_hook so the bytes land inside an active MCCP2 stream. */
+    return telnetty_send(ctx, (const uint8_t*)buf, (size_t)n) < 0 ? -1 : 0;
 }
 
 static int telnetty_color_set_foreground(
@@ -889,10 +890,16 @@ static int telnetty_color_clear_attribute(
     telnetty_color_state_t* s = telnetty__color_state(ctx);
     if (!s) return -1;
     s->attributes &= ~(uint32_t)(1u << (unsigned)attr);
-    /* SGR 20 + attr — 22=normal intensity, 23=not italic, 24=not underline,
-     * 25=not blink, 27=not reverse, 28=not hidden, 29=not strikethrough. */
+    /* SGR 20 + attr — 23=not italic, 24=not underline, 25=not blink,
+     * 27=not reverse, 28=not hidden, 29=not strikethrough. Bold and dim
+     * both clear with 22 (normal intensity); 21 is double-underline on
+     * most terminals. The NO_* enum values already are the off codes. */
+    int sgr;
+    if (attr == TELNETTY_ATTR_BOLD || attr == TELNETTY_ATTR_DIM) sgr = 22;
+    else if ((int)attr >= 20) sgr = (int)attr;
+    else sgr = 20 + (int)attr;
     char code[8];
-    snprintf(code, sizeof(code), "%d", 20 + (int)attr);
+    snprintf(code, sizeof(code), "%d", sgr);
     return telnetty__color_emit(ctx, code);
 }
 
@@ -1404,27 +1411,22 @@ static TELNETTY_UNUSED int telnetty_osc8_link(
     const char* url,
     const char* text
 ) {
-    if (!ctx || !ctx->out_buffer || !url) return -1;
+    if (!ctx || !url) return -1;
     /* Layout: \e]8;<params>;<url>\e\\<text>\e]8;;\e\\
-     *              5 + p + 1 + u + 2   + t + 5    + 2 = 15 + p + u + t */
+     * Every piece goes through telnetty_send so IAC bytes in the caller's
+     * strings are escaped and the output hook (MCCP2) sees all of it. */
     const char* p_str = params ? params : "";
     const char* t_str = text   ? text   : "";
-    /* Emit head. */
     const uint8_t head1[] = { 0x1B, ']', '8', ';' };
-    if (telnetty_buffer_append(ctx->out_buffer, head1, sizeof(head1)) < 0) return -1;
-    if (*p_str && telnetty_buffer_append(ctx->out_buffer,
-        (const uint8_t*)p_str, strlen(p_str)) < 0) return -1;
-    if (telnetty_buffer_append(ctx->out_buffer, (const uint8_t*)";", 1) < 0) return -1;
-    if (telnetty_buffer_append(ctx->out_buffer,
-        (const uint8_t*)url, strlen(url)) < 0) return -1;
     const uint8_t st[] = { 0x1B, '\\' };
-    if (telnetty_buffer_append(ctx->out_buffer, st, sizeof(st)) < 0) return -1;
-    /* Body text. */
-    if (*t_str && telnetty_buffer_append(ctx->out_buffer,
-        (const uint8_t*)t_str, strlen(t_str)) < 0) return -1;
-    /* Closing hyperlink. */
     const uint8_t tail[] = { 0x1B, ']', '8', ';', ';', 0x1B, '\\' };
-    if (telnetty_buffer_append(ctx->out_buffer, tail, sizeof(tail)) < 0) return -1;
+    if (telnetty_send(ctx, head1, sizeof(head1)) < 0) return -1;
+    if (*p_str && telnetty_send(ctx, (const uint8_t*)p_str, strlen(p_str)) < 0) return -1;
+    if (telnetty_send(ctx, (const uint8_t*)";", 1) < 0) return -1;
+    if (telnetty_send(ctx, (const uint8_t*)url, strlen(url)) < 0) return -1;
+    if (telnetty_send(ctx, st, sizeof(st)) < 0) return -1;
+    if (*t_str && telnetty_send(ctx, (const uint8_t*)t_str, strlen(t_str)) < 0) return -1;
+    if (telnetty_send(ctx, tail, sizeof(tail)) < 0) return -1;
     return 0;
 }
 
@@ -1433,7 +1435,7 @@ static TELNETTY_UNUSED int telnetty_osc_query_color(
     int code,
     int index
 ) {
-    if (!ctx || !ctx->out_buffer) return -1;
+    if (!ctx) return -1;
     if (code != 4 && code != 10 && code != 11) return -1;
     /* \e]<code>[;<index>];?\e\\
      * The trailing ? is what makes it a query rather than a set. */
@@ -1446,7 +1448,7 @@ static TELNETTY_UNUSED int telnetty_osc_query_color(
         n = snprintf(buf, sizeof(buf), "\x1B]%d;?\x1B\\", code);
     }
     if (n < 0 || (size_t)n >= sizeof(buf)) return -1;
-    return telnetty_buffer_append(ctx->out_buffer, (const uint8_t*)buf, (size_t)n) < 0 ? -1 : 0;
+    return telnetty_send(ctx, (const uint8_t*)buf, (size_t)n) < 0 ? -1 : 0;
 }
 
 #endif /* TELNETTY_COLOR_IMPLEMENTATION */

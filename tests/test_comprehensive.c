@@ -287,7 +287,8 @@ static void test_buffer_pool_exhaustion(void) {
     /* Return buffers */
     telnetty_buffer_pool_put(pool, buf1);
     telnetty_buffer_pool_put(pool, buf2);
-    telnetty_buffer_pool_put(pool, buf3);
+    /* Pool is back at capacity; the overflow buffer stays ours. */
+    if (telnetty_buffer_pool_put(pool, buf3) != 0) telnetty_buffer_destroy(buf3);
     
     telnetty_buffer_pool_destroy(pool);
 }

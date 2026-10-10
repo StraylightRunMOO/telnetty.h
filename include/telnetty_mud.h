@@ -204,7 +204,7 @@ static int telnetty_msdp_sendf(
 );
 
 /**
- * Request MSDP variable from peer
+ * Ask the server for a variable's current value: VAR "SEND" VAL <var>.
  * 
  * @param ctx TELNET context
  * @param var Variable name
@@ -244,7 +244,9 @@ static int telnetty_msdp_clear_flags(
 );
 
 /**
- * Get MSDP variable value
+ * Get the last known value of an MSDP variable: the last scalar value the
+ * peer sent for it, or the last value we sent with telnetty_msdp_send().
+ * Table and array values are not stored (use the recursive callback).
  * 
  * @param ctx TELNET context
  * @param var Variable name
@@ -1035,6 +1037,55 @@ static void telnetty__msdp_walk_recursive(
     #undef BUILD_PATH
 }
 
+static telnetty_msdp_data_t* telnetty__msdp_of(telnetty_context_t* ctx) {
+    telnetty_option_t* opt = ctx ? ctx->options[TELNETTY_TELOPT_MSDP] : NULL;
+    return (opt && opt->user_data) ? (telnetty_msdp_data_t*)opt->user_data : NULL;
+}
+
+static telnetty_msdp_variable_t* telnetty__msdp_find(telnetty_msdp_data_t* d, const char* name) {
+    for (size_t i = 0; i < d->variable_count; i++) {
+        if (strcmp(d->variables[i].name, name) == 0) return &d->variables[i];
+    }
+    return NULL;
+}
+
+/* Find or append `name` in the variable table. */
+static telnetty_msdp_variable_t* telnetty__msdp_slot(telnetty_msdp_data_t* d, const char* name) {
+    telnetty_msdp_variable_t* v = telnetty__msdp_find(d, name);
+    if (v) return v;
+    if (d->variable_count == d->capacity) {
+        size_t ncap = d->capacity ? d->capacity * 2 : 16;
+        telnetty_msdp_variable_t* nv = (telnetty_msdp_variable_t*)TELNETTY_MUD_REALLOC(
+            d->variables, ncap * sizeof(telnetty_msdp_variable_t));
+        if (!nv) return NULL;
+        d->variables = nv;
+        d->capacity = ncap;
+    }
+    size_t n = strlen(name);
+    char* copy = (char*)TELNETTY_MUD_MALLOC(n + 1);
+    if (!copy) return NULL;
+    memcpy(copy, name, n + 1);
+    v = &d->variables[d->variable_count++];
+    memset(v, 0, sizeof(*v));
+    v->name = copy;
+    return v;
+}
+
+/* Record a scalar value; on allocation failure the old value stays. */
+static telnetty_msdp_variable_t* telnetty__msdp_store(telnetty_msdp_data_t* d,
+                                                      const char* name, const char* value) {
+    telnetty_msdp_variable_t* v = telnetty__msdp_slot(d, name);
+    if (!v) return NULL;
+    size_t n = strlen(value);
+    char* copy = (char*)TELNETTY_MUD_MALLOC(n + 1);
+    if (!copy) return NULL;
+    memcpy(copy, value, n + 1);
+    TELNETTY_MUD_FREE(v->value);
+    v->value = copy;
+    v->last_updated = time(NULL);
+    return v;
+}
+
 static void telnetty_msdp_sb(
     telnetty_context_t* ctx, uint8_t option,
     const uint8_t* data, size_t length, void* user_data
@@ -1046,10 +1097,9 @@ static void telnetty_msdp_sb(
     /* Recursive pass (structured) — runs when a recursive handler is set. */
     telnetty__msdp_walk_recursive(ctx, msdp, data, length);
 
-    /* Flat pass (legacy compatibility) — always runs when a flat handler
-     * is set, so existing callers see the same var/val stream they always
-     * did even when a recursive handler is also registered. */
-    if (!msdp->handler) return;
+    /* Flat pass (legacy compatibility): records scalar values for
+     * telnetty_msdp_get and feeds the flat handler, so existing callers see
+     * the same var/val stream even when a recursive handler is set. */
     size_t i = 0;
     while (i < length) {
         if (data[i] != TELNETTY_MSDP_VAR) { i++; continue; }
@@ -1063,8 +1113,11 @@ static void telnetty_msdp_sb(
         var[vn] = '\0';
         char val[512];
         val[0] = '\0';
+        int scalar = 0;
         if (i < length && data[i] == TELNETTY_MSDP_VAL) {
             i++;
+            scalar = !(i < length && (data[i] == TELNETTY_MSDP_TABLE_OPEN ||
+                                      data[i] == TELNETTY_MSDP_ARRAY_OPEN));
             size_t vls = i;
             while (i < length && data[i] > TELNETTY_MSDP_ARRAY_CLOSE) i++;
             size_t vln = i - vls;
@@ -1072,7 +1125,11 @@ static void telnetty_msdp_sb(
             memcpy(val, data + vls, vln);
             val[vln] = '\0';
         }
-        msdp->handler(ctx, var, val, msdp->user_data);
+        if (scalar) {
+            telnetty_msdp_variable_t* v = telnetty__msdp_store(msdp, var, val);
+            if (v) v->flags |= TELNETTY_MSDP_FLAG_UPDATED;
+        }
+        if (msdp->handler) msdp->handler(ctx, var, val, msdp->user_data);
     }
 }
 
@@ -1137,9 +1194,16 @@ static int telnetty_msdp_send(
     
     /* Send subnegotiation */
     int result = telnetty_send_subnegotiation(ctx, TELNETTY_TELOPT_MSDP, buffer, offset);
-    
+
     TELNETTY_MUD_FREE(buffer);
-    
+
+    telnetty_msdp_data_t* d = telnetty__msdp_of(ctx);
+    if (result == 0 && d && val) {
+        telnetty_msdp_variable_t* v = telnetty__msdp_store(d, var, val);
+        if (v) v->flags = (v->flags & ~(uint32_t)TELNETTY_MSDP_FLAG_UPDATED)
+                        | TELNETTY_MSDP_FLAG_REPORTED;
+    }
+
     return result;
 }
 
@@ -1189,35 +1253,43 @@ static int telnetty_msdp_request(
     const char* var
 ) {
     if (!ctx || !var) return -1;
-    
-    /* Send request for variable */
+
+    /* MSDP spec: the client asks with VAR "SEND" VAL "<name>". */
+    static const char cmd[] = "SEND";
     size_t var_len = strlen(var);
-    size_t total_size = 2 + var_len;
-    
+    size_t total_size = 2 + (sizeof(cmd) - 1) + var_len;
+
     uint8_t* buffer = (uint8_t*)TELNETTY_MUD_MALLOC(total_size);
     if (!buffer) return -1;
-    
-    buffer[0] = TELNETTY_MSDP_VAR;
-    strcpy((char*)buffer + 1, var);
-    buffer[1 + var_len] = TELNETTY_MSDP_VAL; /* Empty value requests variable */
-    
-    int result = telnetty_send_subnegotiation(ctx, TELNETTY_TELOPT_MSDP, buffer, total_size);
-    
+
+    size_t off = 0;
+    buffer[off++] = TELNETTY_MSDP_VAR;
+    memcpy(buffer + off, cmd, sizeof(cmd) - 1);
+    off += sizeof(cmd) - 1;
+    buffer[off++] = TELNETTY_MSDP_VAL;
+    memcpy(buffer + off, var, var_len);
+    off += var_len;
+
+    int result = telnetty_send_subnegotiation(ctx, TELNETTY_TELOPT_MSDP, buffer, off);
+
     TELNETTY_MUD_FREE(buffer);
-    
+
     return result;
 }
 
+/* Flags live on the variable table entry; setting flags on an unknown
+ * variable creates it (with no value) so a server can declare REPORTABLE /
+ * SENDABLE variables up front. */
 static int telnetty_msdp_set_flags(
     telnetty_context_t* ctx,
     const char* var,
     uint32_t flags
 ) {
-    (void)ctx;
-    (void)var;
-    (void)flags;
-    /* This would need integration with MSDP data structure */
-    /* For now, return success */
+    telnetty_msdp_data_t* d = telnetty__msdp_of(ctx);
+    if (!d || !var) return -1;
+    telnetty_msdp_variable_t* v = telnetty__msdp_slot(d, var);
+    if (!v) return -1;
+    v->flags |= flags;
     return 0;
 }
 
@@ -1226,11 +1298,11 @@ static int telnetty_msdp_clear_flags(
     const char* var,
     uint32_t flags
 ) {
-    (void)ctx;
-    (void)var;
-    (void)flags;
-    /* This would need integration with MSDP data structure */
-    /* For now, return success */
+    telnetty_msdp_data_t* d = telnetty__msdp_of(ctx);
+    if (!d || !var) return -1;
+    telnetty_msdp_variable_t* v = telnetty__msdp_find(d, var);
+    if (!v) return -1;
+    v->flags &= ~flags;
     return 0;
 }
 
@@ -1238,21 +1310,25 @@ static const char* telnetty_msdp_get(
     telnetty_context_t* ctx,
     const char* var
 ) {
-    (void)ctx;
-    (void)var;
-    /* This would need integration with MSDP data structure */
-    /* For now, return NULL */
-    return NULL;
+    telnetty_msdp_data_t* d = telnetty__msdp_of(ctx);
+    if (!d || !var) return NULL;
+    telnetty_msdp_variable_t* v = telnetty__msdp_find(d, var);
+    return v ? v->value : NULL;
 }
 
 static int telnetty_msdp_remove(
     telnetty_context_t* ctx,
     const char* var
 ) {
-    (void)ctx;
-    (void)var;
-    /* This would need integration with MSDP data structure */
-    /* For now, return success */
+    telnetty_msdp_data_t* d = telnetty__msdp_of(ctx);
+    if (!d || !var) return -1;
+    telnetty_msdp_variable_t* v = telnetty__msdp_find(d, var);
+    if (!v) return -1;
+    TELNETTY_MUD_FREE(v->name);
+    TELNETTY_MUD_FREE(v->value);
+    size_t idx = (size_t)(v - d->variables);
+    memmove(v, v + 1, (d->variable_count - idx - 1) * sizeof(*v));
+    d->variable_count--;
     return 0;
 }
 
@@ -1323,15 +1399,22 @@ static void telnetty_gmcp_sb(
     } else {
         message[0] = '\0';
     }
-    char jsonbuf[1024];
+    /* The JSON body is copied whole: payloads such as Room.Info routinely
+     * exceed any fixed stack buffer, and truncated JSON is unparseable. */
+    char* jsonbuf = NULL;
     if (sp && (size_t)(sp - (const char*)data) + 1 < length) {
         size_t jl = length - (size_t)(sp + 1 - (const char*)data);
-        if (jl >= sizeof(jsonbuf)) jl = sizeof(jsonbuf) - 1;
+        jsonbuf = (char*)TELNETTY_MUD_MALLOC(jl + 1);
+        if (!jsonbuf) {
+            telnetty_report_error(ctx, TELNETTY_ERR_ALLOC, "GMCP payload allocation failed");
+            return;
+        }
         memcpy(jsonbuf, sp + 1, jl);
         jsonbuf[jl] = '\0';
         json = jsonbuf;
     }
     gd->handler(ctx, package, message, json, gd->user_data);
+    TELNETTY_MUD_FREE(jsonbuf);
 }
 
 static void telnetty_gmcp_handler(
@@ -1343,10 +1426,17 @@ static void telnetty_gmcp_handler(
     if (option != TELNETTY_TELOPT_GMCP) return;
     telnetty_gmcp_data_t* gmcp_data = (telnetty_gmcp_data_t*)user_data;
     if (!gmcp_data) return;
-    gmcp_data->negotiation_complete =
-        (command == TELNETTY_DO || command == TELNETTY_WILL);
-    if (command == TELNETTY_DO)
-        telnetty_gmcp_send_hello(ctx, "Telnetty", "1.0.0");
+    telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_GMCP];
+    gmcp_data->negotiation_complete = opt &&
+        (opt->us == TELNETTY_Q_YES || opt->him == TELNETTY_Q_YES);
+    /* Core.Hello and Core.Supports.Set are client -> server messages. We
+     * act as the client when the peer offered GMCP (its WILL settled). */
+    if (command == TELNETTY_WILL) {
+        telnetty_gmcp_send_hello(ctx, "Telnetty", TELNETTY_VERSION_STRING);
+        if (gmcp_data->module_count > 0)
+            telnetty_gmcp_send_supports(ctx, (const char* const*)gmcp_data->supported_modules,
+                                        gmcp_data->module_count);
+    }
 }
 
 static int telnetty_enable_gmcp(
@@ -1450,26 +1540,66 @@ static int telnetty_gmcp_sendf(
     return result;
 }
 
+static int telnetty__gmcp_send_supports_verb(
+    telnetty_context_t* ctx,
+    const char* verb,
+    const char* const* modules,
+    size_t count
+);
+
+static telnetty_gmcp_data_t* telnetty__gmcp_of(telnetty_context_t* ctx) {
+    telnetty_option_t* opt = ctx ? ctx->options[TELNETTY_TELOPT_GMCP] : NULL;
+    return (opt && opt->user_data) ? (telnetty_gmcp_data_t*)opt->user_data : NULL;
+}
+
+/* Track a module we support. Once GMCP is up the change is announced with
+ * Core.Supports.Add / .Remove; modules registered before that go out in
+ * the Core.Supports.Set that follows Core.Hello. */
 static int telnetty_gmcp_register_module(
     telnetty_context_t* ctx,
     const char* module
 ) {
-    (void)ctx;
-    (void)module;
-    /* This would need integration with GMCP data structure */
-    /* For now, return success */
-    return 0;
+    telnetty_gmcp_data_t* d = telnetty__gmcp_of(ctx);
+    if (!d || !module || !*module) return -1;
+    for (size_t i = 0; i < d->module_count; i++)
+        if (strcmp(d->supported_modules[i], module) == 0) return 0;
+    if (d->module_count == d->capacity) {
+        size_t ncap = d->capacity ? d->capacity * 2 : 8;
+        char** nm = (char**)TELNETTY_MUD_REALLOC(d->supported_modules, ncap * sizeof(char*));
+        if (!nm) return -1;
+        d->supported_modules = nm;
+        d->capacity = ncap;
+    }
+    size_t n = strlen(module);
+    char* copy = (char*)TELNETTY_MUD_MALLOC(n + 1);
+    if (!copy) return -1;
+    memcpy(copy, module, n + 1);
+    d->supported_modules[d->module_count++] = copy;
+    if (!d->negotiation_complete) return 0;
+    const char* one[1] = { copy };
+    return telnetty__gmcp_send_supports_verb(ctx, "Add", one, 1);
 }
 
 static int telnetty_gmcp_unregister_module(
     telnetty_context_t* ctx,
     const char* module
 ) {
-    (void)ctx;
-    (void)module;
-    /* This would need integration with GMCP data structure */
-    /* For now, return success */
-    return 0;
+    telnetty_gmcp_data_t* d = telnetty__gmcp_of(ctx);
+    if (!d || !module) return -1;
+    for (size_t i = 0; i < d->module_count; i++) {
+        if (strcmp(d->supported_modules[i], module) != 0) continue;
+        int rc = 0;
+        if (d->negotiation_complete) {
+            const char* one[1] = { d->supported_modules[i] };
+            rc = telnetty__gmcp_send_supports_verb(ctx, "Remove", one, 1);
+        }
+        TELNETTY_MUD_FREE(d->supported_modules[i]);
+        memmove(&d->supported_modules[i], &d->supported_modules[i + 1],
+                (d->module_count - i - 1) * sizeof(char*));
+        d->module_count--;
+        return rc;
+    }
+    return -1;
 }
 
 static int telnetty_gmcp_send_hello(
@@ -1486,8 +1616,10 @@ static int telnetty_gmcp_send_hello(
         version ? version : "1.0.0");
 }
 
-static int telnetty_gmcp_send_supports(
+/* Core.Supports.<verb> ["mod", ...] with JSON string escaping. */
+static int telnetty__gmcp_send_supports_verb(
     telnetty_context_t* ctx,
+    const char* verb,
     const char* const* modules,
     size_t count
 ) {
@@ -1543,12 +1675,19 @@ static int telnetty_gmcp_send_supports(
     json_data[offset++] = ']';
     json_data[offset] = '\0';
     
-    /* Send Core.Supports.Set message */
-    int result = telnetty_gmcp_send(ctx, "Core.Supports", "Set", json_data);
+    int result = telnetty_gmcp_send(ctx, "Core.Supports", verb, json_data);
     
     TELNETTY_MUD_FREE(json_data);
     
     return result;
+}
+
+static int telnetty_gmcp_send_supports(
+    telnetty_context_t* ctx,
+    const char* const* modules,
+    size_t count
+) {
+    return telnetty__gmcp_send_supports_verb(ctx, "Set", modules, count);
 }
 
 /* ============================================================================

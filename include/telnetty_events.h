@@ -366,66 +366,6 @@ static inline TELNETTY_UNUSED size_t telnetty_event_queue_capacity(telnetty_even
     return queue ? queue->max_size : 0;
 }
 
-/**
- * Fire a high priority event
- */
-static inline void telnetty_fire_event_high(
-    telnetty_context_t* ctx,
-    telnetty_event_type_t type,
-    const telnetty_event_data_union_t* data
-) {
-    telnetty_fire_event_ex(ctx, type, TELNETTY_PRIORITY_HIGH, data);
-}
-
-/**
- * Fire a low priority event
- */
-static inline void telnetty_fire_event_low(
-    telnetty_context_t* ctx,
-    telnetty_event_type_t type,
-    const telnetty_event_data_union_t* data
-) {
-    telnetty_fire_event_ex(ctx, type, TELNETTY_PRIORITY_LOW, data);
-}
-
-/**
- * Fire a connection event
- */
-static inline void telnetty_fire_connect_event(
-    telnetty_context_t* ctx,
-    const char* address,
-    int port
-) {
-    telnetty_event_data_union_t data = telnetty_event_create_connect(address, port);
-    telnetty_fire_event_ex(ctx, (telnetty_event_type_t)TELNETTY_EVENT_CONNECT, TELNETTY_PRIORITY_NORMAL, &data);
-}
-
-/**
- * Fire a disconnection event
- */
-static inline void telnetty_fire_disconnect_event(
-    telnetty_context_t* ctx,
-    int reason,
-    const char* message
-) {
-    telnetty_event_data_union_t data = telnetty_event_create_disconnect(reason, message);
-    telnetty_fire_event_ex(ctx, (telnetty_event_type_t)TELNETTY_EVENT_DISCONNECT, TELNETTY_PRIORITY_HIGH, &data);
-}
-
-/**
- * Fire a buffer event
- */
-static inline void telnetty_fire_buffer_event(
-    telnetty_context_t* ctx,
-    telnetty_event_type_t type,
-    size_t current_size,
-    size_t max_size,
-    size_t watermark
-) {
-    telnetty_event_data_union_t data = telnetty_event_create_buffer(current_size, max_size, watermark);
-    telnetty_fire_event_ex(ctx, type, TELNETTY_PRIORITY_NORMAL, &data);
-}
-
 /* ============================================================================
  * Implementation
  * ============================================================================ */
@@ -778,6 +718,75 @@ static telnetty_event_data_union_t telnetty_event_create_buffer(
     buf->max_size = max_size;
     buf->watermark = watermark;
     return data;
+}
+
+/* ============================================================================
+ * Convenience Wrappers
+ *
+ * These call into the implementation above, so they only exist when
+ * TELNETTY_EVENTS_IMPLEMENTATION is defined. Declaring them unconditionally
+ * referenced static functions that have no definition in other TUs
+ * (-Wundefined-internal).
+ * ============================================================================ */
+
+/**
+ * Fire a high priority event
+ */
+static inline void telnetty_fire_event_high(
+    telnetty_context_t* ctx,
+    telnetty_event_type_t type,
+    const telnetty_event_data_union_t* data
+) {
+    telnetty_fire_event_ex(ctx, type, TELNETTY_PRIORITY_HIGH, data);
+}
+
+/**
+ * Fire a low priority event
+ */
+static inline void telnetty_fire_event_low(
+    telnetty_context_t* ctx,
+    telnetty_event_type_t type,
+    const telnetty_event_data_union_t* data
+) {
+    telnetty_fire_event_ex(ctx, type, TELNETTY_PRIORITY_LOW, data);
+}
+
+/**
+ * Fire a connection event
+ */
+static inline void telnetty_fire_connect_event(
+    telnetty_context_t* ctx,
+    const char* address,
+    int port
+) {
+    telnetty_event_data_union_t data = telnetty_event_create_connect(address, port);
+    telnetty_fire_event_ex(ctx, (telnetty_event_type_t)TELNETTY_EVENT_CONNECT, TELNETTY_PRIORITY_NORMAL, &data);
+}
+
+/**
+ * Fire a disconnection event
+ */
+static inline void telnetty_fire_disconnect_event(
+    telnetty_context_t* ctx,
+    int reason,
+    const char* message
+) {
+    telnetty_event_data_union_t data = telnetty_event_create_disconnect(reason, message);
+    telnetty_fire_event_ex(ctx, (telnetty_event_type_t)TELNETTY_EVENT_DISCONNECT, TELNETTY_PRIORITY_HIGH, &data);
+}
+
+/**
+ * Fire a buffer event
+ */
+static inline void telnetty_fire_buffer_event(
+    telnetty_context_t* ctx,
+    telnetty_event_type_t type,
+    size_t current_size,
+    size_t max_size,
+    size_t watermark
+) {
+    telnetty_event_data_union_t data = telnetty_event_create_buffer(current_size, max_size, watermark);
+    telnetty_fire_event_ex(ctx, type, TELNETTY_PRIORITY_NORMAL, &data);
 }
 
 #endif /* TELNETTY_EVENTS_IMPLEMENTATION */

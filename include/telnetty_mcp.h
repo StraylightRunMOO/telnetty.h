@@ -170,6 +170,7 @@ typedef struct {
     size_t line_cap;
     int line_mode;                      /**< 0 undecided, 1 skip in-band, 2 collecting. */
     int negotiate_done;                 /**< Peer sent mcp-negotiate-end. */
+    int disabled;                       /**< telnetty_disable_mcp() ran on this ctx. */
 } telnetty_mcp_data_t;
 
 /* ============================================================================
@@ -808,10 +809,15 @@ static telnetty_mcp_data_t* telnetty_mcp_of(telnetty_context_t* ctx) {
 
 static TELNETTY_UNUSED int telnetty_disable_mcp(telnetty_context_t* ctx) {
     if (!ctx) return -1;
-    /* MCP is in-band — there is no TELNET option to WONT. Detach the
-     * inbound data hook so we stop reassembling #$# lines; leave the
-     * option slot's user_data alone (freed on destroy). */
-    telnetty__mcp_data_hook = NULL;
+    /* MCP is in-band — there is no TELNET option to WONT. Stop
+     * reassembling #$# lines on this context only: the data hook is shared
+     * by every context in the translation unit, so it stays installed and
+     * checks the per-context flag. user_data is freed on destroy. */
+    telnetty_mcp_data_t* d = telnetty_mcp_of(ctx);
+    if (!d) return -1;
+    d->disabled = 1;
+    d->line_len = 0;
+    d->line_mode = 0;
     return 0;
 }
 
@@ -1453,21 +1459,38 @@ static int telnetty__mcp_write_line(telnetty_context_t* ctx, const char* line) {
     return telnetty_send(ctx, (const uint8_t*)"\r\n", 2);
 }
 
-/* Send `#$#mcp-negotiate-can package: X min-version: 2.1 max-version: 2.1`
- * for each active registered package, then `#$#mcp-negotiate-end`. */
+/* Advertise mcp-negotiate itself (required by MCP 2.1) and every active
+ * registered package at its own version, then `#$#mcp-negotiate-end`. */
 static void telnetty__mcp_send_negotiate_all(telnetty_context_t* ctx, telnetty_mcp_data_t* d) {
     char buf[512];
+    const char* key = telnetty__mcp_wire_key(ctx, d);
+    int n = snprintf(buf, sizeof(buf),
+        "mcp-negotiate-can %s package: mcp-negotiate min-version: 1.0 max-version: 2.0", key);
+    if (n > 0 && (size_t)n < sizeof(buf)) telnetty__mcp_write_line(ctx, buf);
     for (size_t i = 0; i < d->package_count; i++) {
         telnetty_mcp_package_t* pkg = d->packages[i];
         if (!pkg || !pkg->name || !pkg->active) continue;
-        int n = snprintf(buf, sizeof(buf),
-            "mcp-negotiate-can %s package: %s min-version: 2.1 max-version: 2.1",
-            telnetty__mcp_ensure_key(ctx, d), pkg->name);
+        const char* ver = (pkg->version && *pkg->version) ? pkg->version : "1.0";
+        n = snprintf(buf, sizeof(buf),
+            "mcp-negotiate-can %s package: %s min-version: %s max-version: %s",
+            key, pkg->name, ver, ver);
         if (n > 0 && (size_t)n < sizeof(buf)) telnetty__mcp_write_line(ctx, buf);
     }
-    int n = snprintf(buf, sizeof(buf), "mcp-negotiate-end %s",
-                     telnetty__mcp_ensure_key(ctx, d));
+    n = snprintf(buf, sizeof(buf), "mcp-negotiate-end %s", key);
     if (n > 0 && (size_t)n < sizeof(buf)) telnetty__mcp_write_line(ctx, buf);
+}
+
+/* Replace the session key (the key every later message must carry). */
+static void telnetty__mcp_set_session_key(telnetty_mcp_data_t* d, const char* key) {
+    if (d->session_key && d->session_key != d->auth_key)
+        TELNETTY_MCP_FREE(d->session_key);
+    d->session_key = NULL;
+    if (key == d->auth_key) { d->session_key = d->auth_key; return; }
+    size_t n = strlen(key);
+    char* copy = (char*)TELNETTY_MCP_MALLOC(n + 1);
+    if (!copy) return;
+    memcpy(copy, key, n + 1);
+    d->session_key = copy;
 }
 
 /* MCP 2.1 messages are `#$#keyword key: value ...` lines in the data stream,
@@ -1528,21 +1551,73 @@ static TELNETTY_UNUSED int telnetty_mcp_handle_line(telnetty_context_t* ctx, con
     if (!keyword) return 1;
 
     if (strcmp(keyword, "mcp") == 0) {
+        TELNETTY_MCP_FREE(keyword);
+        /* Version ranges must overlap our 2.1. */
+        char* ver = telnetty__mcp_kv_get(p, "version");
+        char* to = telnetty__mcp_kv_get(p, "to");
+        int ok = ver && telnetty__mcp_range_overlap(ver, to, "2.1", "2.1");
+        TELNETTY_MCP_FREE(ver);
+        TELNETTY_MCP_FREE(to);
+        if (!ok) return 1;
+
+        if (d->server_mode) {
+            /* Client's reply: it chose the key; every later message in
+             * either direction carries it. */
+            char* key = telnetty__mcp_kv_get(p, "authentication-key");
+            if (!key || !*key) { TELNETTY_MCP_FREE(key); return 1; }
+            telnetty__mcp_set_session_key(d, key);
+            TELNETTY_MCP_FREE(key);
+        } else {
+            /* Server's opening line: pick our key and answer with it. A
+             * repeated opening line is ignored rather than re-keying. */
+            if (d->state == TELNETTY_MCP_STATE_ENABLED ||
+                d->state == TELNETTY_MCP_STATE_NEGOTIATING) return 1;
+            telnetty__mcp_set_session_key(d, telnetty__mcp_ensure_key(ctx, d));
+            char buf[256];
+            int n = snprintf(buf, sizeof(buf),
+                "mcp authentication-key: %s version: 2.1 to: 2.1",
+                telnetty__mcp_wire_key(ctx, d));
+            if (n > 0 && (size_t)n < sizeof(buf)) telnetty__mcp_write_line(ctx, buf);
+        }
+        if (!d->session_key) return 1;
         d->state = TELNETTY_MCP_STATE_ENABLED;
-        /* Reply to peer's handshake with our own key + version, then push
-         * every registered package via mcp-negotiate-can. */
-        char buf[256];
-        int n = snprintf(buf, sizeof(buf),
-            "mcp authentication-key: %s version: 2.1 to: 2.1",
-            telnetty__mcp_ensure_key(ctx, d));
-        if (n > 0 && (size_t)n < sizeof(buf)) telnetty__mcp_write_line(ctx, buf);
         telnetty__mcp_send_negotiate_all(ctx, d);
+        return 1;
+    }
+
+    /* Every other message must carry the session key (MCP 2.1: messages
+     * with a wrong key are ignored). This is what stops ordinary text
+     * that happens to start with #$# from being taken as a message. */
+    const char* args = p;   /* arguments after the key token */
+    {
+        const char* q = p;
+        telnetty__mcp_skip_ws(&q);
+        char* key = telnetty__mcp_next_token(&q);
+        args = q;
+        int ok = key && d->session_key && strcmp(key, d->session_key) == 0;
+        TELNETTY_MCP_FREE(key);
+        if (!ok) {
+            telnetty_log(ctx, TELNETTY_LOG_DEBUG, "mcp",
+                         "ignoring '%s' with wrong or missing key", keyword);
+            TELNETTY_MCP_FREE(keyword);
+            return 1;
+        }
+    }
+
+    if (strcmp(keyword, "mcp-negotiate-can") == 0) {
+        d->state = TELNETTY_MCP_STATE_NEGOTIATING;
+        char* pkgname = telnetty__mcp_kv_get(args, "package");
+        if (pkgname) {
+            telnetty_mcp_package_t* pkg = telnetty_mcp_get_package(ctx, pkgname);
+            if (pkg) pkg->peer_supports = true;
+            TELNETTY_MCP_FREE(pkgname);
+        }
         TELNETTY_MCP_FREE(keyword);
         return 1;
     }
-    if (strcmp(keyword, "mcp-negotiate-can") == 0
-     || strcmp(keyword, "mcp-negotiate-end") == 0) {
-        d->state = TELNETTY_MCP_STATE_NEGOTIATING;
+    if (strcmp(keyword, "mcp-negotiate-end") == 0) {
+        d->negotiate_done = 1;
+        d->state = TELNETTY_MCP_STATE_ENABLED;
         TELNETTY_MCP_FREE(keyword);
         return 1;
     }
@@ -1597,7 +1672,7 @@ static TELNETTY_UNUSED int telnetty_mcp_handle_line(telnetty_context_t* ctx, con
  * line_mode: 0 = start of line, 1 = skip (not MCP), 2 = collecting. */
 static void telnetty__mcp_on_data(telnetty_context_t* ctx, const uint8_t* data, size_t len) {
     telnetty_mcp_data_t* d = telnetty_mcp_of(ctx);
-    if (!d || !data || len == 0) return;
+    if (!d || d->disabled || !data || len == 0) return;
 
     for (size_t i = 0; i < len; i++) {
         unsigned char ch = data[i];
@@ -1660,26 +1735,29 @@ static void telnetty__mcp_on_data(telnetty_context_t* ctx, const uint8_t* data, 
     }
 }
 
+/* Shallow copies: the string pointers stay owned by the context and are
+ * valid until the package is unregistered or the context destroyed. */
 static size_t telnetty_mcp_get_packages(
     telnetty_context_t* ctx,
     telnetty_mcp_package_t* packages,
     size_t max_packages
 ) {
-    if (!ctx || !packages) return 0;
-    (void)max_packages;
-    
-    /* This would need integration with MCP data structure */
-    /* For now, return 0 */
-    return 0;
+    telnetty_mcp_data_t* d = telnetty_mcp_of(ctx);
+    if (!d || !packages) return 0;
+    size_t n = 0;
+    for (size_t i = 0; i < d->package_count && n < max_packages; i++) {
+        if (d->packages[i]) packages[n++] = *d->packages[i];
+    }
+    return n;
 }
 
+/* Per-context counter (was a process-wide static shared by every
+ * connection). */
 static TELNETTY_UNUSED int telnetty_mcp_generate_message_id(telnetty_context_t* ctx) {
-    if (!ctx) return -1;
-    
-    /* This would need integration with MCP data structure */
-    /* For now, return a simple counter */
-    static int message_id = 0;
-    return ++message_id;
+    telnetty_mcp_data_t* d = telnetty_mcp_of(ctx);
+    if (!d) return -1;
+    if (d->last_message_id == INT_MAX) d->last_message_id = 0;
+    return ++d->last_message_id;
 }
 
 static int telnetty_mcp_parse_message(
@@ -1808,8 +1886,15 @@ static int telnetty_mcp_build_message(
  * Built-in Package Implementation
  * ============================================================================ */
 
+/* The builtins are placeholders with empty handlers, so they are
+ * registered inactive: not advertised in mcp-negotiate-can, and not
+ * matched on dispatch. Active, "dns" would prefix-match every real
+ * dns-org-mud-moo-* message and swallow it before the default handler.
+ * Install real handlers and call telnetty_mcp_activate_package to use
+ * them. */
 static TELNETTY_UNUSED int telnetty_mcp_register_builtin_packages(telnetty_context_t* ctx) {
     if (!ctx) return -1;
+    static const char* const builtin[] = { "mcp-core", "simple-edit", "redirect", "dns" };
     
     /* Register Core package */
     telnetty_mcp_register_package(ctx, "mcp-core", "2.1", 
@@ -1830,6 +1915,9 @@ static TELNETTY_UNUSED int telnetty_mcp_register_builtin_packages(telnetty_conte
     telnetty_mcp_register_package(ctx, "dns", "1.0", 
         "DNS package", 
         telnetty_mcp_dns_handler, NULL);
+
+    for (size_t i = 0; i < sizeof(builtin) / sizeof(builtin[0]); i++)
+        telnetty_mcp_deactivate_package(ctx, builtin[i]);
     
     return 0;
 }

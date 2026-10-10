@@ -129,10 +129,24 @@ static void test_gmcp(void) {
     gmcp_mod[0] = gmcp_msg[0] = gmcp_data[0] = 0;
     telnetty_context_t* ctx = telnetty_create(on_ev, NULL);
     CHECK(telnetty_enable_gmcp(ctx, on_gmcp, NULL) == 0, "enable gmcp");
+    /* Server side: the client's DO must not trigger Core.Hello — that is
+     * a client -> server message. */
+    reset_out(ctx);
     uint8_t dodo[] = { 255, 253, 201 };
     telnetty_process(ctx, dodo, sizeof(dodo));
     telnetty_buffer_t* b = telnetty_get_output_buffer(ctx);
-    CHECK(buf_has(b, "Core.Hello "), "hello is Package.Message json");
+    CHECK(!buf_has(b, "Core.Hello"), "server does not send Core.Hello");
+    /* Client side: the server's WILL triggers Core.Hello. */
+    {
+        telnetty_context_t* cli = telnetty_create(on_ev, NULL);
+        telnetty_enable_gmcp(cli, on_gmcp, NULL);
+        reset_out(cli);
+        uint8_t will[] = { 255, 251, 201 };
+        telnetty_process(cli, will, sizeof(will));
+        CHECK(buf_has(telnetty_get_output_buffer(cli), "Core.Hello "),
+              "hello is Package.Message json");
+        telnetty_destroy(cli);
+    }
     reset_out(ctx);
     CHECK(telnetty_gmcp_send(ctx, "Room", "Info", "{\"x\":1}") == 0, "gmcp send");
     b = telnetty_get_output_buffer(ctx);
@@ -190,7 +204,8 @@ static void test_mcp_line(void) {
     CHECK(telnetty_enable_mcp(ctx, true, TELNETTY_MCP_AUTH_NONE, NULL) == 0, "enable mcp");
     CHECK(telnetty_mcp_get_package_count(ctx) >= 1, "builtin packages registered");
     CHECK(telnetty_mcp_handle_line(ctx, "hello") == 0, "plain line ignored");
-    CHECK(telnetty_mcp_handle_line(ctx, "#$#mcp version: 2.1 to: 2.1") == 1, "mcp line");
+    /* Server mode: the client's reply carries the key it chose. */
+    CHECK(telnetty_mcp_handle_line(ctx, "#$#mcp authentication-key: k1 version: 2.1 to: 2.1") == 1, "mcp line");
     CHECK(telnetty_mcp_get_state(ctx) == TELNETTY_MCP_STATE_ENABLED, "mcp enabled");
     telnetty_destroy(ctx);
 }
@@ -199,7 +214,7 @@ static void test_mcp_data_hook(void) {
     printf("test_mcp_data_hook\n");
     telnetty_context_t* ctx = telnetty_create(on_ev, NULL);
     CHECK(telnetty_enable_mcp(ctx, true, TELNETTY_MCP_AUTH_NONE, NULL) == 0, "enable mcp");
-    const char* a = "#$#mcp ver";
+    const char* a = "#$#mcp authentication-key: k1 ver";
     const char* b = "sion: 2.1 to: 2.1\r\nplain\n";
     telnetty_process(ctx, (const uint8_t*)a, strlen(a));
     CHECK(telnetty_mcp_get_state(ctx) != TELNETTY_MCP_STATE_ENABLED, "partial line held");

@@ -322,6 +322,11 @@ typedef enum {
     TELNETTY_ENV_USERVAR = 3              /**< User-defined variable */
 } telnetty_env_type_t;
 
+/* RFC 1572 subnegotiation commands (first payload byte). */
+#define TELNETTY_ENV_IS    0
+#define TELNETTY_ENV_SEND  1
+#define TELNETTY_ENV_INFO  2
+
 /* Environment data structure */
 typedef struct {
     char** variables;                   /**< Environment variables */
@@ -363,8 +368,10 @@ static TELNETTY_UNUSED int telnetty_enable_environ(telnetty_context_t* ctx);
 static TELNETTY_UNUSED int telnetty_request_environ(telnetty_context_t* ctx);
 
 /**
- * Send environment variables to peer
- * 
+ * Send environment variables to peer as IAC SB NEW-ENVIRON IS VAR ...
+ * (the reply to a SEND). Use telnetty_send_environ_info() for unsolicited
+ * updates.
+ *
  * @param ctx TELNET context
  * @param vars Array of variable names
  * @param values Array of variable values
@@ -379,11 +386,13 @@ static int telnetty_send_environ(
 );
 
 /**
- * Get environment variable
- * 
+ * Get an environment variable the peer reported via IS or INFO. VAR and
+ * USERVAR names share one namespace. A variable sent without a VALUE
+ * reads back as "".
+ *
  * @param ctx TELNET context
  * @param name Variable name
- * @return Variable value or NULL if not found
+ * @return Variable value or NULL if not received
  */
 static const char* telnetty_get_environ(
     telnetty_context_t* ctx,
@@ -690,11 +699,41 @@ static void telnetty_ttype_handler(
     void* user_data
 ) {
     (void)option;
-    (void)user_data;
     if (!ctx) return;
+    telnetty_terminal_type_data_t* td = (telnetty_terminal_type_data_t*)user_data;
     /* After peer WILL settles (him=YES), request the type once via SEND. */
-    if (command == TELNETTY_WILL)
-        telnetty_query_terminal_type(ctx);
+    if (command == TELNETTY_WILL && (!td || !td->query_sent)) {
+        if (telnetty_query_terminal_type(ctx) == 0 && td) td->query_sent = true;
+    }
+}
+
+/* IAC SB TTYPE IS <name> IAC SE: keep the latest name, truncated to
+ * max_length. Repeated SENDs (MTTS cycling) overwrite it in turn. */
+static void telnetty_ttype_sb_handler(
+    telnetty_context_t* ctx,
+    uint8_t option,
+    const uint8_t* data,
+    size_t length,
+    void* user_data
+) {
+    (void)ctx; (void)option;
+    telnetty_terminal_type_data_t* td = (telnetty_terminal_type_data_t*)user_data;
+    if (!td || length < 1 || data[0] != 0 /* IS */) return;
+    size_t n = length - 1;
+    if (n > td->max_length) n = td->max_length;
+    char* name = (char*)TELNETTY_OPTIONS_MALLOC(n + 1);
+    if (!name) return;
+    memcpy(name, data + 1, n);
+    name[n] = '\0';
+    TELNETTY_OPTIONS_FREE(td->terminal_type);
+    td->terminal_type = name;
+}
+
+static void telnetty_ttype_data_free(void* p) {
+    telnetty_terminal_type_data_t* td = (telnetty_terminal_type_data_t*)p;
+    if (!td) return;
+    TELNETTY_OPTIONS_FREE(td->terminal_type);
+    TELNETTY_OPTIONS_FREE(td);
 }
 
 static TELNETTY_UNUSED int telnetty_enable_ttype(telnetty_context_t* ctx, size_t max_type_length) {
@@ -710,7 +749,9 @@ static TELNETTY_UNUSED int telnetty_enable_ttype(telnetty_context_t* ctx, size_t
 
     /* Server typically DO TTYPE (ask client), not WILL. */
     telnetty_set_option_support(ctx, TELNETTY_TELOPT_TTYPE, 0, 1);
-    telnetty_register_option(ctx, TELNETTY_TELOPT_TTYPE, telnetty_ttype_handler, ttype_data);
+    telnetty_register_option(ctx, TELNETTY_TELOPT_TTYPE, telnetty_ttype_handler, NULL);
+    telnetty_register_sb_handler(ctx, TELNETTY_TELOPT_TTYPE, telnetty_ttype_sb_handler, NULL);
+    telnetty_option_set_user_data(ctx, TELNETTY_TELOPT_TTYPE, ttype_data, telnetty_ttype_data_free);
     return telnetty_send_option(ctx, TELNETTY_DO, TELNETTY_TELOPT_TTYPE);
 }
 
@@ -724,10 +765,9 @@ static TELNETTY_UNUSED int telnetty_query_terminal_type(telnetty_context_t* ctx)
 
 static TELNETTY_UNUSED const char* telnetty_get_terminal_type(telnetty_context_t* ctx) {
     if (!ctx) return NULL;
-    
-    /* This would need to be integrated with the option tracker system */
-    /* For now, return NULL */
-    return NULL;
+    telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_TTYPE];
+    if (!opt || opt->sb_handler != telnetty_ttype_sb_handler || !opt->user_data) return NULL;
+    return ((telnetty_terminal_type_data_t*)opt->user_data)->terminal_type;
 }
 
 /* ============================================================================
@@ -743,16 +783,45 @@ static void telnetty_naws_handler(
     (void)command;
     (void)user_data;
     if (!ctx || option != TELNETTY_TELOPT_NAWS) return;
-    
-    /* NAWS doesn't use commands, only subnegotiation */
-    /* The command handling would be done in the subnegotiation handler */
+    /* NAWS carries its data in subnegotiation; see telnetty_naws_sb_handler. */
+}
+
+/* IAC SB NAWS <w16> <h16> IAC SE. The core parser has already collapsed
+ * doubled IACs, so a 255 byte in either value arrives as one byte. */
+static void telnetty_naws_sb_handler(
+    telnetty_context_t* ctx,
+    uint8_t option,
+    const uint8_t* data,
+    size_t length,
+    void* user_data
+) {
+    (void)option;
+    telnetty_window_size_data_t* wd = (telnetty_window_size_data_t*)user_data;
+    if (!wd) return;
+    if (length != 4) {
+        telnetty_report_error(ctx, TELNETTY_ERR_PROTOCOL, "NAWS payload is not 4 bytes");
+        return;
+    }
+    wd->width = (uint16_t)((data[0] << 8) | data[1]);
+    wd->height = (uint16_t)((data[2] << 8) | data[3]);
+    wd->size_received = true;
+}
+
+static void telnetty_naws_data_free(void* p) {
+    TELNETTY_OPTIONS_FREE(p);
 }
 
 static TELNETTY_UNUSED int telnetty_enable_naws(telnetty_context_t* ctx) {
     if (!ctx) return -1;
+    telnetty_window_size_data_t* wd = (telnetty_window_size_data_t*)TELNETTY_OPTIONS_MALLOC(
+        sizeof(telnetty_window_size_data_t));
+    if (!wd) return -1;
+    memset(wd, 0, sizeof(*wd));
     /* Server asks client for window size (DO), does not WILL NAWS. */
     telnetty_set_option_support(ctx, TELNETTY_TELOPT_NAWS, 0, 1);
     telnetty_register_option(ctx, TELNETTY_TELOPT_NAWS, telnetty_naws_handler, NULL);
+    telnetty_register_sb_handler(ctx, TELNETTY_TELOPT_NAWS, telnetty_naws_sb_handler, NULL);
+    telnetty_option_set_user_data(ctx, TELNETTY_TELOPT_NAWS, wd, telnetty_naws_data_free);
     return telnetty_send_option(ctx, TELNETTY_DO, TELNETTY_TELOPT_NAWS);
 }
 
@@ -761,13 +830,14 @@ static int telnetty_get_window_size(
     uint16_t* width,
     uint16_t* height
 ) {
-    (void)width;
-    (void)height;
     if (!ctx) return -1;
-    
-    /* This would need to be integrated with the option tracker system */
-    /* For now, return failure */
-    return -1;
+    telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_NAWS];
+    if (!opt || opt->sb_handler != telnetty_naws_sb_handler || !opt->user_data) return -1;
+    telnetty_window_size_data_t* wd = (telnetty_window_size_data_t*)opt->user_data;
+    if (!wd->size_received) return -1;
+    if (width) *width = wd->width;
+    if (height) *height = wd->height;
+    return 0;
 }
 
 static int telnetty_send_window_size(
@@ -800,24 +870,130 @@ static void telnetty_environ_handler(
     (void)command;
     (void)user_data;
     if (!ctx || option != TELNETTY_TELOPT_NEW_ENVIRON) return;
-    
-    /* Environment option handling would be implemented here */
-    /* This is a placeholder for the full implementation */
+    /* Q-method in core owns the replies; IS/INFO data arrives through
+     * telnetty_environ_sb_handler. Answering SEND is up to the
+     * application (telnetty_send_environ / telnetty_send_mnes). */
+}
+
+static void telnetty_environ_data_free(void* p) {
+    telnetty_environ_data_t* ed = (telnetty_environ_data_t*)p;
+    if (!ed) return;
+    for (size_t i = 0; i < ed->count; i++) {
+        TELNETTY_OPTIONS_FREE(ed->variables[i]);
+        TELNETTY_OPTIONS_FREE(ed->values[i]);
+    }
+    TELNETTY_OPTIONS_FREE(ed->variables);
+    TELNETTY_OPTIONS_FREE(ed->values);
+    TELNETTY_OPTIONS_FREE(ed);
+}
+
+/* Insert or replace name=value. Takes ownership of both strings. */
+static int telnetty__environ_store(telnetty_environ_data_t* ed, char* name, char* value) {
+    for (size_t i = 0; i < ed->count; i++) {
+        if (strcmp(ed->variables[i], name) == 0) {
+            TELNETTY_OPTIONS_FREE(name);
+            TELNETTY_OPTIONS_FREE(ed->values[i]);
+            ed->values[i] = value;
+            return 0;
+        }
+    }
+    if (ed->count == ed->capacity) {
+        size_t ncap = ed->capacity ? ed->capacity * 2 : 8;
+        char** nv = (char**)TELNETTY_OPTIONS_REALLOC(ed->variables, ncap * sizeof(char*));
+        if (!nv) goto fail;
+        ed->variables = nv;
+        char** nval = (char**)TELNETTY_OPTIONS_REALLOC(ed->values, ncap * sizeof(char*));
+        if (!nval) goto fail;
+        ed->values = nval;
+        ed->capacity = ncap;
+    }
+    ed->variables[ed->count] = name;
+    ed->values[ed->count] = value;
+    ed->count++;
+    return 0;
+fail:
+    TELNETTY_OPTIONS_FREE(name);
+    TELNETTY_OPTIONS_FREE(value);
+    return -1;
+}
+
+/* Copy one escaped NEW-ENVIRON field starting at data[*pos], stopping at
+ * the next unescaped VAR/VALUE/USERVAR marker. Returns a NUL-terminated
+ * heap string. */
+static char* telnetty__environ_field(const uint8_t* data, size_t length, size_t* pos) {
+    char* out = (char*)TELNETTY_OPTIONS_MALLOC(length - *pos + 1);
+    if (!out) return NULL;
+    size_t n = 0;
+    while (*pos < length) {
+        uint8_t c = data[*pos];
+        if (c == TELNETTY_ENV_VAR || c == TELNETTY_ENV_VALUE || c == TELNETTY_ENV_USERVAR)
+            break;
+        if (c == TELNETTY_ENV_ESC) {
+            (*pos)++;
+            if (*pos >= length) break;
+            c = data[*pos];
+        }
+        out[n++] = (char)c;
+        (*pos)++;
+    }
+    out[n] = '\0';
+    return out;
+}
+
+/* IAC SB NEW-ENVIRON IS|INFO [VAR|USERVAR name [VALUE value]]* IAC SE */
+static void telnetty_environ_sb_handler(
+    telnetty_context_t* ctx,
+    uint8_t option,
+    const uint8_t* data,
+    size_t length,
+    void* user_data
+) {
+    (void)ctx; (void)option;
+    telnetty_environ_data_t* ed = (telnetty_environ_data_t*)user_data;
+    if (!ed || length < 1) return;
+    if (data[0] != TELNETTY_ENV_IS && data[0] != TELNETTY_ENV_INFO) return;
+
+    size_t pos = 1;
+    while (pos < length) {
+        uint8_t type = data[pos++];
+        if (type != TELNETTY_ENV_VAR && type != TELNETTY_ENV_USERVAR) {
+            /* Stray VALUE (or garbage): skip to the next marker. */
+            char* skip = telnetty__environ_field(data, length, &pos);
+            TELNETTY_OPTIONS_FREE(skip);
+            continue;
+        }
+        char* name = telnetty__environ_field(data, length, &pos);
+        if (!name) return;
+        char* value = NULL;
+        if (pos < length && data[pos] == TELNETTY_ENV_VALUE) {
+            pos++;
+            value = telnetty__environ_field(data, length, &pos);
+        } else {
+            /* Defined but no value: RFC 1572 distinguishes this from
+             * undefined; we report it as the empty string. */
+            value = (char*)TELNETTY_OPTIONS_MALLOC(1);
+            if (value) value[0] = '\0';
+        }
+        if (!value) { TELNETTY_OPTIONS_FREE(name); return; }
+        if (telnetty__environ_store(ed, name, value) < 0) return;
+    }
 }
 
 static TELNETTY_UNUSED int telnetty_enable_environ(telnetty_context_t* ctx) {
     if (!ctx) return -1;
-    
-    /* Register option handler */
-    telnetty_option_tracker_t* tracker = telnetty_option_tracker_create(
-        TELNETTY_TELOPT_NEW_ENVIRON,
-        telnetty_environ_handler,
-        NULL
-    );
-    
-    if (!tracker) return -1;
-    
-    /* Send WILL to enable environment option */
+
+    telnetty_environ_data_t* ed = (telnetty_environ_data_t*)TELNETTY_OPTIONS_MALLOC(
+        sizeof(telnetty_environ_data_t));
+    if (!ed) return -1;
+    memset(ed, 0, sizeof(*ed));
+
+    /* Either side may carry variables: we WILL (send ours) and accept the
+     * peer's WILL so its IS/INFO replies are recorded. */
+    telnetty_set_option_support(ctx, TELNETTY_TELOPT_NEW_ENVIRON, 1, 1);
+    telnetty_register_option(ctx, TELNETTY_TELOPT_NEW_ENVIRON, telnetty_environ_handler, NULL);
+    telnetty_register_sb_handler(ctx, TELNETTY_TELOPT_NEW_ENVIRON, telnetty_environ_sb_handler, NULL);
+    telnetty_option_set_user_data(ctx, TELNETTY_TELOPT_NEW_ENVIRON, ed, telnetty_environ_data_free);
+
     return telnetty_send_option(ctx, TELNETTY_WILL, TELNETTY_TELOPT_NEW_ENVIRON);
 }
 
@@ -829,16 +1005,18 @@ static TELNETTY_UNUSED int telnetty_request_environ(telnetty_context_t* ctx) {
     return telnetty_send_subnegotiation(ctx, TELNETTY_TELOPT_NEW_ENVIRON, request_data, 1);
 }
 
-static int telnetty_send_environ(
+static int telnetty__send_environ_cmd(
     telnetty_context_t* ctx,
+    uint8_t command,
     const char* const* vars,
     const char* const* values,
     size_t count
 ) {
     if (!ctx || !vars || !values) return -1;
     
-    /* Calculate escaped RFC 1572 payload size without overflowing. */
-    size_t total_size = 0;
+    /* Calculate escaped RFC 1572 payload size without overflowing. The
+     * leading byte is the IS / INFO command. */
+    size_t total_size = 1;
     for (size_t i = 0; i < count; i++) {
         if (!vars[i] || !values[i]) return -1;
         const unsigned char* fields[2] = {
@@ -858,11 +1036,12 @@ static int telnetty_send_environ(
     }
     
     /* Allocate temporary buffer */
-    uint8_t* buffer = (uint8_t*)TELNETTY_OPTIONS_MALLOC(total_size ? total_size : 1);
+    uint8_t* buffer = (uint8_t*)TELNETTY_OPTIONS_MALLOC(total_size);
     if (!buffer) return -1;
     
     /* Build environment data, escaping reserved NEW-ENVIRON marker bytes. */
     size_t offset = 0;
+    buffer[offset++] = command;
     for (size_t i = 0; i < count; i++) {
         buffer[offset++] = TELNETTY_ENV_VAR;
         for (const unsigned char* p = (const unsigned char*)vars[i]; *p; p++) {
@@ -889,14 +1068,36 @@ static int telnetty_send_environ(
     return result;
 }
 
+static int telnetty_send_environ(
+    telnetty_context_t* ctx,
+    const char* const* vars,
+    const char* const* values,
+    size_t count
+) {
+    return telnetty__send_environ_cmd(ctx, TELNETTY_ENV_IS, vars, values, count);
+}
+
+/** Unsolicited update: IAC SB NEW-ENVIRON INFO VAR ... IAC SE. */
+static TELNETTY_UNUSED int telnetty_send_environ_info(
+    telnetty_context_t* ctx,
+    const char* const* vars,
+    const char* const* values,
+    size_t count
+) {
+    return telnetty__send_environ_cmd(ctx, TELNETTY_ENV_INFO, vars, values, count);
+}
+
 static const char* telnetty_get_environ(
     telnetty_context_t* ctx,
     const char* name
 ) {
     if (!ctx || !name) return NULL;
-
-    /* This would need to be integrated with the option tracker system */
-    /* For now, return NULL */
+    telnetty_option_t* opt = ctx->options[TELNETTY_TELOPT_NEW_ENVIRON];
+    if (!opt || opt->sb_handler != telnetty_environ_sb_handler || !opt->user_data) return NULL;
+    telnetty_environ_data_t* ed = (telnetty_environ_data_t*)opt->user_data;
+    for (size_t i = 0; i < ed->count; i++) {
+        if (strcmp(ed->variables[i], name) == 0) return ed->values[i];
+    }
     return NULL;
 }
 
