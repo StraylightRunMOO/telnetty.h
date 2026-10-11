@@ -2,7 +2,7 @@
 
 All notable changes to Telnetty are documented in this file.
 
-## [1.2.0] — Unreleased
+## [1.2.1] — 2026-10-10
 
 Focus: more MUD protocols, working compression in both directions, safer
 byte handling, headers that build cleanly in other people's projects, and

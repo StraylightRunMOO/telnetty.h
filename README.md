@@ -90,7 +90,7 @@ add_subdirectory(third_party/telnetty.h)
 include(FetchContent)
 FetchContent_Declare(telnetty
     GIT_REPOSITORY https://github.com/StraylightRunMOO/telnetty.h.git
-    GIT_TAG v1.2.0)
+    GIT_TAG v1.2.1)
 FetchContent_MakeAvailable(telnetty)
 
 target_link_libraries(my_mud PRIVATE telnetty::telnetty)

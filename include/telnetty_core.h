@@ -13,7 +13,7 @@
  * - Performance optimized parsing
  * 
  * @author Damus <damus@straylightrun.org>
- * @version 1.2.0
+ * @version 1.2.1
  * 
  */
 
@@ -78,8 +78,8 @@ extern "C" {
 
 #define TELNETTY_VERSION_MAJOR  1
 #define TELNETTY_VERSION_MINOR  2
-#define TELNETTY_VERSION_PATCH  0
-#define TELNETTY_VERSION_STRING "1.2.0"
+#define TELNETTY_VERSION_PATCH  1
+#define TELNETTY_VERSION_STRING "1.2.1"
 #define TELNETTY_VERSION_HEX \
     ((TELNETTY_VERSION_MAJOR << 16) | (TELNETTY_VERSION_MINOR << 8) | TELNETTY_VERSION_PATCH)
 

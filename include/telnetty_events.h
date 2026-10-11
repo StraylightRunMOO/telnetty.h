@@ -12,7 +12,7 @@
  * - Thread-safe event handling (optional)
  * 
  * @author Damus <damus@straylightrun.org>
- * @version 1.2.0
+ * @version 1.2.1
  * 
  */
 

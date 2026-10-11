@@ -221,8 +221,8 @@ static void test_pool_exhaustion_fallback(void) {
 static void test_version_macros(void) {
     OK(TELNETTY_VERSION_MAJOR == 1, "major version");
     OK(TELNETTY_VERSION_MINOR == 2, "minor version");
-    OK(strcmp(TELNETTY_VERSION_STRING, "1.2.0") == 0, "version string");
-    OK(TELNETTY_VERSION_HEX == ((1 << 16) | (2 << 8) | 0), "version hex");
+    OK(strcmp(TELNETTY_VERSION_STRING, "1.2.1") == 0, "version string");
+    OK(TELNETTY_VERSION_HEX == ((1 << 16) | (2 << 8) | 1), "version hex");
 }
 
 /* ----- Default option policy sets support flags ----- */
